@@ -62,16 +62,21 @@ fun AppRoot(refreshKey: Int) {
     var summary by remember { mutableStateOf<DaySummary?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var period by remember { mutableStateOf(Period.TODAY) }
+    // How many periods back from the current one is on screen (0 = the current one).
+    var offset by remember { mutableStateOf(0L) }
+    // The day shown on the Today tab. It differs from `summary` (always the real
+    // today, used by the banner) when the user has stepped back to an earlier day.
+    var shownDay by remember { mutableStateOf<DaySummary?>(null) }
 
     // The database is opened once and kept for the life of this screen.
     var database by remember { mutableStateOf<Database?>(null) }
 
     // Runs when the screen first appears and again whenever `refreshKey` changes.
-    LaunchedEffect(refreshKey) {
+    LaunchedEffect(refreshKey, period, offset) {
         try {
             // Disk work must not happen on the thread that draws the screen, so
             // it runs on the IO thread pool and this coroutine waits for it.
-            val (opened, loaded) = withContext(Dispatchers.IO) {
+            val (opened, loaded, shown) = withContext(Dispatchers.IO) {
                 val db = database ?: Database.open(
                     File(context.filesDir, "timesink.db").path,
                     DEVICE_ID,
@@ -85,10 +90,19 @@ fun AppRoot(refreshKey: Int) {
                 }
                 // Hand back both the open database and today's numbers; the
                 // state is updated below, on the main thread.
-                db to db.daySummary(0L, now, zone)
+                // The banner always shows the real today; the Today tab may show an
+                // earlier day when the user has stepped back.
+                val realToday = db.daySummary(0L, now, zone)
+                val day = if (period == Period.TODAY && offset != 0L) {
+                    db.daySummary(offset, now, zone)
+                } else {
+                    realToday
+                }
+                Triple(db, realToday, day)
             }
             database = opened
             summary = loaded
+            shownDay = shown
             error = null
         } catch (e: Exception) {
             // Show the problem on screen instead of crashing.
@@ -117,14 +131,30 @@ fun AppRoot(refreshKey: Int) {
             } else {
                 MonoText(text = "t i m e s i n k", color = colors.accent, bold = true)
             }
-            PeriodTabs(selected = period, onSelect = { period = it })
+            PeriodTabs(
+                selected = period,
+                // Choosing a tab starts at its current period, not where the last
+                // tab was stepped to.
+                onSelect = {
+                    period = it
+                    offset = 0L
+                },
+            )
             Spacer(Modifier.height(8.dp))
 
             error?.let { MonoText(text = it, color = colors.danger) }
 
-            if (today != null) {
+            val day = shownDay
+            if (today != null && day != null) {
                 if (period == Period.TODAY) {
-                    TodayScreen(today)
+                    StepBar(
+                        label = day.label,
+                        canBack = day.canBack,
+                        canForward = day.canForward,
+                        onBack = { if (day.canBack) offset -= 1 },
+                        onForward = { if (day.canForward) offset += 1 },
+                    )
+                    TodayScreen(day)
                 } else {
                     // The other periods come in the next step.
                     TuiPanel(title = " ${period.label} ") {
