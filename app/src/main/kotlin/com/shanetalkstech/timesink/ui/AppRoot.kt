@@ -24,6 +24,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import uniffi.timesink_ffi.Database
 import uniffi.timesink_ffi.DaySummary
+import uniffi.timesink_ffi.PeriodSummary
 import uniffi.timesink_ffi.defaultThemeName
 import uniffi.timesink_ffi.listThemes
 
@@ -67,6 +68,10 @@ fun AppRoot(refreshKey: Int) {
     // The day shown on the Today tab. It differs from `summary` (always the real
     // today, used by the banner) when the user has stepped back to an earlier day.
     var shownDay by remember { mutableStateOf<DaySummary?>(null) }
+    // The numbers for the other tabs, and which tab they were loaded for, so a
+    // slow load for one tab is never drawn under another tab's name.
+    var shownRange by remember { mutableStateOf<PeriodSummary?>(null) }
+    var shownFor by remember { mutableStateOf(Period.TODAY) }
 
     // The database is opened once and kept for the life of this screen.
     var database by remember { mutableStateOf<Database?>(null) }
@@ -76,7 +81,11 @@ fun AppRoot(refreshKey: Int) {
         try {
             // Disk work must not happen on the thread that draws the screen, so
             // it runs on the IO thread pool and this coroutine waits for it.
-            val (opened, loaded, shown) = withContext(Dispatchers.IO) {
+            // Copy the state first: the loading below runs on another thread, and
+            // these values must not change underneath it.
+            val loadedFor = period
+            val loadedOffset = offset
+            val data = withContext(Dispatchers.IO) {
                 val db = database ?: Database.open(
                     File(context.filesDir, "timesink.db").path,
                     DEVICE_ID,
@@ -88,21 +97,26 @@ fun AppRoot(refreshKey: Int) {
                 if (debuggable && db.isEmpty()) {
                     db.fillDemoData(now, DEMO_DAYS, DEMO_SEED, zone)
                 }
-                // Hand back both the open database and today's numbers; the
-                // state is updated below, on the main thread.
-                // The banner always shows the real today; the Today tab may show an
-                // earlier day when the user has stepped back.
+                // The banner always shows the real today.
                 val realToday = db.daySummary(0L, now, zone)
-                val day = if (period == Period.TODAY && offset != 0L) {
-                    db.daySummary(offset, now, zone)
+                // The Today tab may show an earlier day; every other tab shows a period.
+                val day = if (loadedFor == Period.TODAY && loadedOffset != 0L) {
+                    db.daySummary(loadedOffset, now, zone)
                 } else {
                     realToday
                 }
-                Triple(db, realToday, day)
+                val range = if (loadedFor == Period.TODAY) {
+                    null
+                } else {
+                    db.periodSummary(loadedFor, loadedOffset, null, now, zone)
+                }
+                Loaded(db, realToday, day, range)
             }
-            database = opened
-            summary = loaded
-            shownDay = shown
+            database = data.db
+            summary = data.today
+            shownDay = data.day
+            shownRange = data.range
+            shownFor = loadedFor
             error = null
         } catch (e: Exception) {
             // Show the problem on screen instead of crashing.
@@ -156,12 +170,32 @@ fun AppRoot(refreshKey: Int) {
                     )
                     TodayScreen(day)
                 } else {
-                    // The other periods come in the next step.
-                    TuiPanel(title = " ${period.label} ") {
-                        MonoText(text = "coming in the next step", color = colors.muted)
+                    val range = shownRange
+                    // Draw only numbers that were loaded for the tab on screen.
+                    if (range != null && shownFor == period) {
+                        StepBar(
+                            label = range.label,
+                            canBack = range.canBack,
+                            canForward = range.canForward,
+                            onBack = { if (range.canBack) offset -= 1 },
+                            onForward = { if (range.canForward) offset += 1 },
+                        )
+                        RangeScreen(range, today = today.day)
                     }
                 }
             }
         }
     }
 }
+
+/** What one load of the screen produced: the open database and the numbers to show. */
+private class Loaded(
+    /** The open database, kept for later loads. */
+    val db: Database,
+    /** The real today, for the banner. */
+    val today: DaySummary,
+    /** The day for the Today tab (today, or an earlier day stepped back to). */
+    val day: DaySummary,
+    /** The numbers for any other tab, or `null` on the Today tab. */
+    val range: PeriodSummary?,
+)

@@ -41,3 +41,19 @@ fun dateLine(day: Long): String {
     val week = date.get(IsoFields.WEEK_OF_WEEK_BASED_YEAR)
     return String.format(Locale.US, "%s %s %02d %d · Week %d", weekday, month, date.dayOfMonth, date.year, week)
 }
+
+/**
+ * A heat-map row label for a local day number: `Mon 09` (short weekday and
+ * two-digit day of the month).
+ */
+fun dayLabel(day: Long): String {
+    val date = LocalDate.ofEpochDay(day)
+    val weekday = date.dayOfWeek.name.take(3).lowercase().replaceFirstChar { it.uppercase() }
+    return String.format(Locale.US, "%s %02d", weekday, date.dayOfMonth)
+}
+
+/** A month's name for the month bars: `Nov 2026` (month is 1 to 12). */
+fun monthLabel(year: Int, month: Int): String {
+    val name = java.time.Month.of(month).name.take(3).lowercase().replaceFirstChar { it.uppercase() }
+    return "$name $year"
+}
