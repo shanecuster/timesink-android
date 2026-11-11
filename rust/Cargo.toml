@@ -1,0 +1,58 @@
+# Workspace manifest for the Rust half of timesink-android.
+#
+# The Android app is written in Kotlin, but the real work -- the database, the
+# periods and totals, the colour themes -- is done by `timesink-core`, the same
+# Rust library the terminal version of timesink uses. This workspace builds the
+# thin "glue" that lets Kotlin call that library:
+#
+#   timesink-ffi    the glue library (becomes libtimesink_ffi.so on the phone)
+#   uniffi-bindgen  a tiny helper program that reads the glue library and
+#                   writes the matching Kotlin source file
+#
+# A *workspace* is a set of Rust crates (packages) built together. They share
+# one Cargo.lock (so every build uses the exact same dependency versions) and
+# one `target/` output directory.
+[workspace]
+members = ["timesink-ffi", "uniffi-bindgen"]
+
+# Resolver "3" is the dependency-resolution algorithm that goes with Rust
+# edition 2024. A workspace root has no edition of its own to infer it from,
+# so it is stated explicitly.
+resolver = "3"
+
+# Versions are declared once here and the member crates say
+# `name.workspace = true`, so the crates can never disagree.
+[workspace.dependencies]
+# The shared engine, taken straight from the timesink repository on GitHub.
+#
+# `rev` pins ONE exact commit instead of "whatever is newest". That matters for
+# two reasons: (1) builds are reproducible -- the same source always produces
+# the same app; (2) a change to timesink's master can never silently break this
+# app. To move to a newer core, change this hash on purpose, then rebuild and
+# test, and commit that change by itself.
+#
+# This commit is the one that split the shared code out of the terminal app
+# (periods, views and day totals now live in timesink-core).
+timesink-core = { git = "https://github.com/shanecuster/timesink", rev = "ba96a6bfe9c0acf2d29e6ea4790a1b41234a581c" }
+
+# `anyhow` is the catch-all error type timesink-core returns from its functions.
+# This crate needs to name that type to convert it into the error Kotlin sees.
+# The same major version as timesink-core uses, so Cargo links one copy.
+anyhow = "1"
+
+# UniFFI: Mozilla's tool that generates the Kotlin <-> Rust bridge code so we
+# never have to write JNI (Java's low-level native interface) by hand.
+uniffi = "0.32.2"
+
+# Settings for optimized ("release") builds, which is what ships on a phone.
+[profile.release]
+# "s" asks the compiler to optimize for small size rather than raw speed.
+# Phones care about APK size, and this app spends its time waiting, not computing.
+opt-level = "s"
+# Link-time optimization lets the compiler remove unused code across crates,
+# shrinking the final .so a lot. "thin" is a good size/compile-time balance.
+lto = "thin"
+# One code-generation unit per crate: slower to compile, slightly smaller.
+codegen-units = 1
+# Remove debug symbols from the shipped library.
+strip = true
