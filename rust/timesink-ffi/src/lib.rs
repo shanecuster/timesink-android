@@ -25,7 +25,10 @@
 //! * **Category colours** (`category_color`) -- the same stable colour per
 //!   category the terminal app uses.
 //!
-//! Later steps add the other periods and sync.
+//! * **Other periods** (`period_summary`, `custom_range`) -- week, month, year,
+//!   all time, calendar week, quarter and custom, each stepped back and forth.
+//!
+//! Later steps add sync and the phone's own usage.
 //!
 //! ## Why mirror types instead of exporting core's types directly?
 //!
@@ -46,9 +49,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use timesink_core::appmap::AppMap;
 use timesink_core::data::{Snapshot, View};
 use timesink_core::db::Db;
-use timesink_core::demo;
 use timesink_core::model::WindowSnapshot;
+use timesink_core::period::{self, Range};
 use timesink_core::theme::{self, Rgb, Theme};
+use timesink_core::{demo, stats};
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -262,6 +266,12 @@ pub struct TimelineSpan {
 pub struct DaySummary {
     /// Local day number (days since 1970-01-01); Kotlin turns it into a date.
     pub day: i64,
+    /// A short description of the day shown, such as `Tue Nov 10, 2026`.
+    pub label: String,
+    /// Is there an earlier day to step back to?
+    pub can_back: bool,
+    /// Is there a later day to step forward to (false when this is today)?
+    pub can_forward: bool,
     /// Total active seconds today.
     pub total_secs: i64,
     /// Total seconds of media listening today.
@@ -278,6 +288,112 @@ pub struct DaySummary {
     pub timeline: Vec<TimelineSpan>,
     /// Seconds of listening per player, biggest first.
     pub listening: Vec<NameSecs>,
+}
+
+/// The periods the dashboard can show, in the terminal app's tab order.
+/// Mirror of core's `View`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum Period {
+    /// Just one day (today, or a day stepped back to).
+    Today,
+    /// The last 7 days.
+    Week,
+    /// The last 30 days.
+    Month,
+    /// The last 365 days, summed by month.
+    Year,
+    /// Everything recorded, summed by month once it is long.
+    All,
+    /// A calendar week, Monday to Sunday.
+    CalWeek,
+    /// A calendar quarter.
+    Quarter,
+    /// Days chosen by the user.
+    Custom,
+}
+
+/// Converts the bridge's period into core's view.
+impl From<Period> for View {
+    /// One-to-one: each period is the view of the same name.
+    fn from(p: Period) -> View {
+        match p {
+            Period::Today => View::Today,
+            Period::Week => View::Week,
+            Period::Month => View::Month,
+            Period::Year => View::Year,
+            Period::All => View::All,
+            Period::CalWeek => View::CalWeek,
+            Period::Quarter => View::Quarter,
+            Period::Custom => View::Custom,
+        }
+    }
+}
+
+/// A run of whole local days chosen for the Custom period, both ends included.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct CustomSpan {
+    /// The first local day number.
+    pub first: i64,
+    /// The last local day number (never before `first`, never after today).
+    pub last: i64,
+}
+
+/// One day of a longer period: its totals and its activity hour by hour (a row
+/// of the heat map).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct DayInfo {
+    /// Local day number (days since 1970-01-01).
+    pub day: i64,
+    /// Total active seconds that day.
+    pub total: i64,
+    /// Seconds of media listening that day.
+    pub listening: i64,
+    /// Active seconds in each of the 24 hours.
+    pub hours: Vec<i64>,
+}
+
+/// One calendar month of a long period.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MonthInfo {
+    /// Calendar year.
+    pub year: i32,
+    /// Month number, 1 to 12.
+    pub month: u32,
+    /// Active seconds in the month (within the period shown).
+    pub total: i64,
+    /// Days of the month inside the period.
+    pub days: i64,
+    /// Days that had any activity.
+    pub active_days: i64,
+}
+
+/// Everything a longer period's screen shows, worked out in Rust.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct PeriodSummary {
+    /// A short description of the days covered, such as `Nov 3-9, 2026`.
+    pub label: String,
+    /// Is there an earlier period to step back to?
+    pub can_back: bool,
+    /// Is there a later period to step forward to?
+    pub can_forward: bool,
+    /// Show months instead of a day-by-hour grid (too many days to list)?
+    pub by_month: bool,
+    /// Total active seconds in the period.
+    pub total_secs: i64,
+    /// Total seconds of media listening in the period.
+    pub listening_secs: i64,
+    /// Days in the period that had any activity.
+    pub active_days: i64,
+    /// Seconds per category, biggest first.
+    pub categories: Vec<NameSecs>,
+    /// Seconds per application, biggest first.
+    pub apps: Vec<AppSecs>,
+    /// Seconds of listening per player, biggest first.
+    pub listening: Vec<NameSecs>,
+    /// One row per day, oldest first.
+    pub days: Vec<DayInfo>,
+    /// One row per calendar month, oldest first.
+    pub months: Vec<MonthInfo>,
 }
 
 /// The built-in application names and categories used until the phone has its
@@ -404,45 +520,34 @@ impl Database {
         Ok((data.intervals.len() + data.listening.len() + data.sites.len()) as u32)
     }
 
-    /// Everything the Today screen needs, as of `now`.
+    /// Everything the Today screen needs for the day `offset` days from today
+    /// (0 = today, -1 = yesterday, ...), as of `now`.
     pub fn day_summary(
         &self,
+        offset: i64,
         now: i64,
         zones: Arc<dyn ZoneOffsets>,
     ) -> Result<DaySummary, FfiError> {
         // The time-zone callback as the plain function core expects.
         let tz = |ts: i64| zones.offset_at(ts);
         let db = self.lock()?;
-        let snap = Snapshot::load_default(&db, &self.map, View::Today, None, now, &tz)?;
+        let loaded = self.load(&db, View::Today, offset, None, now, &tz)?;
+        let snap = &loaded.snapshot;
 
-        // Twenty-four hour slots for today: the last day row is today.
+        // Twenty-four hour slots for the day: the only day row.
         let mut hours = vec![0i64; 24];
-        if let Some(today) = snap.days.last() {
-            hours.copy_from_slice(&today.hours);
+        if let Some(day) = snap.days.last() {
+            hours.copy_from_slice(&day.hours);
         }
         Ok(DaySummary {
-            day: snap.today,
+            day: snap.range.last,
+            label: loaded.label,
+            can_back: loaded.can_back,
+            can_forward: loaded.can_forward,
             total_secs: snap.total,
             listening_secs: snap.listening_total,
-            categories: snap
-                .categories
-                .iter()
-                .map(|(name, secs)| NameSecs {
-                    name: name.clone(),
-                    secs: *secs,
-                    color_index: self.color_index(name),
-                })
-                .collect(),
-            apps: snap
-                .apps
-                .iter()
-                .map(|a| AppSecs {
-                    name: a.display.clone(),
-                    category: a.category.clone(),
-                    secs: a.secs,
-                    color_index: self.color_index(&a.category),
-                })
-                .collect(),
+            categories: self.category_rows(snap),
+            apps: self.app_rows(snap),
             hours,
             now_secs: snap.now_secs,
             timeline: snap
@@ -455,17 +560,186 @@ impl Database {
                     color_index: self.color_index(&b.category),
                 })
                 .collect(),
-            listening: snap
-                .listening
+            listening: listening_rows(snap),
+        })
+    }
+
+    /// Everything a longer period's screen needs. `offset` steps back from the
+    /// current period (0 = the current one, -1 = the one before, ...).
+    /// `custom` is the days chosen for `Period::Custom` (the last 30 days when
+    /// none has been chosen); it is ignored for the other periods.
+    pub fn period_summary(
+        &self,
+        period: Period,
+        offset: i64,
+        custom: Option<CustomSpan>,
+        now: i64,
+        zones: Arc<dyn ZoneOffsets>,
+    ) -> Result<PeriodSummary, FfiError> {
+        let tz = |ts: i64| zones.offset_at(ts);
+        let db = self.lock()?;
+        let custom = custom.map(|c| Range::new(c.first, c.last));
+        let loaded = self.load(&db, period.into(), offset, custom, now, &tz)?;
+        let snap = &loaded.snapshot;
+        Ok(PeriodSummary {
+            label: loaded.label,
+            can_back: loaded.can_back,
+            can_forward: loaded.can_forward,
+            by_month: snap.by_month(),
+            total_secs: snap.total,
+            listening_secs: snap.listening_total,
+            active_days: snap.days.iter().filter(|d| d.total > 0).count() as i64,
+            categories: self.category_rows(snap),
+            apps: self.app_rows(snap),
+            listening: listening_rows(snap),
+            days: snap
+                .days
                 .iter()
-                .map(|(name, secs)| NameSecs {
-                    name: name.clone(),
-                    secs: *secs,
-                    color_index: None,
+                .map(|d| DayInfo {
+                    day: d.day,
+                    total: d.total,
+                    listening: d.listening,
+                    hours: d.hours.to_vec(),
+                })
+                .collect(),
+            months: snap
+                .months
+                .iter()
+                .map(|m| MonthInfo {
+                    year: m.year,
+                    month: m.month,
+                    total: m.total,
+                    days: m.days,
+                    active_days: m.active_days,
                 })
                 .collect(),
         })
     }
+}
+
+/// A period's numbers together with the facts the screen needs about stepping.
+struct Loaded {
+    /// The numbers.
+    snapshot: Snapshot,
+    /// A short description of the days covered.
+    label: String,
+    /// Is there an earlier period?
+    can_back: bool,
+    /// Is there a later period?
+    can_forward: bool,
+}
+
+/// More helpers used only inside this crate.
+impl Database {
+    /// Loads the numbers for `view`, `offset` periods back, and works out whether
+    /// the user can step further either way. Shared by `day_summary` and
+    /// `period_summary` so the two follow the same stepping rules as the
+    /// terminal app (which are in core).
+    fn load(
+        &self,
+        db: &Db,
+        view: View,
+        offset: i64,
+        custom: Option<Range>,
+        now: i64,
+        tz: &dyn Fn(i64) -> i64,
+    ) -> Result<Loaded, FfiError> {
+        let today = stats::local_day(now, tz);
+        // The first recorded day, which the periods may not step before.
+        let earliest = db.earliest_start()?.map(|t| stats::local_day(t, tz));
+        let range = view.range(offset, today, earliest, custom);
+        let snapshot = Snapshot::load(db, &self.map, view, range, None, now, tz)?;
+        Ok(Loaded {
+            snapshot,
+            label: if view == View::All {
+                "All time".to_string()
+            } else {
+                view.label(range)
+            },
+            can_back: view.step(offset, -1, today, earliest, custom).is_some(),
+            can_forward: view.step(offset, 1, today, earliest, custom).is_some(),
+        })
+    }
+
+    /// The category bars of a snapshot, with their colour slots.
+    fn category_rows(&self, snap: &Snapshot) -> Vec<NameSecs> {
+        snap.categories
+            .iter()
+            .map(|(name, secs)| NameSecs {
+                name: name.clone(),
+                secs: *secs,
+                color_index: self.color_index(name),
+            })
+            .collect()
+    }
+
+    /// The application bars of a snapshot, with their category colour slots.
+    fn app_rows(&self, snap: &Snapshot) -> Vec<AppSecs> {
+        snap.apps
+            .iter()
+            .map(|a| AppSecs {
+                name: a.display.clone(),
+                category: a.category.clone(),
+                secs: a.secs,
+                color_index: self.color_index(&a.category),
+            })
+            .collect()
+    }
+}
+
+/// The listening rows of a snapshot (players have no colour slot of their own).
+fn listening_rows(snap: &Snapshot) -> Vec<NameSecs> {
+    snap.listening
+        .iter()
+        .map(|(name, secs)| NameSecs {
+            name: name.clone(),
+            secs: *secs,
+            color_index: None,
+        })
+        .collect()
+}
+
+/// Checks two typed dates and turns them into a custom range.
+///
+/// Dates are written `YYYY-MM-DD`. An empty `to` means "until today"; the two are
+/// swapped if given the wrong way round; an end after today is cut back to today;
+/// and a start in the future is refused. These are the same rules as the terminal
+/// app's `c` prompt.
+#[uniffi::export]
+pub fn custom_range(
+    from: String,
+    to: String,
+    now: i64,
+    zones: Arc<dyn ZoneOffsets>,
+) -> Result<CustomSpan, FfiError> {
+    let today = stats::local_day(now, &|ts| zones.offset_at(ts));
+    let bad = |what: &str| FfiError::Failed {
+        detail: format!("{what}: type a date like 2026-10-01"),
+    };
+    let first = period::parse_date(&from).ok_or_else(|| bad("the first day"))?;
+    // An empty end means "until today". A start after today is refused here,
+    // before the two days are put in order: `Range::new` would otherwise swap a
+    // future start with today and quietly accept it.
+    let last = if to.trim().is_empty() {
+        if first > today {
+            return Err(FfiError::Failed {
+                detail: "that range starts in the future".to_string(),
+            });
+        }
+        today
+    } else {
+        period::parse_date(&to).ok_or_else(|| bad("the last day"))?
+    };
+    let range = Range::new(first, last);
+    if range.first > today {
+        return Err(FfiError::Failed {
+            detail: "that range starts in the future".to_string(),
+        });
+    }
+    Ok(CustomSpan {
+        first: range.first,
+        last: range.last.min(today),
+    })
 }
 
 /// The colour for a category (or `None`, a name with no colour) in the named
@@ -556,7 +830,7 @@ mod tests {
     fn the_day_summary_is_complete() {
         let db = memory_database();
         db.fill_demo_data(NOW, 14, 7, Arc::new(Utc)).unwrap();
-        let s = db.day_summary(NOW, Arc::new(Utc)).unwrap();
+        let s = db.day_summary(0, NOW, Arc::new(Utc)).unwrap();
         assert_eq!(s.day, 20_000);
         assert!(s.total_secs > 0);
         assert_eq!(s.hours.len(), 24);
@@ -572,7 +846,9 @@ mod tests {
     /// An empty database still gives a valid, all-zero summary.
     #[test]
     fn an_empty_database_gives_an_empty_summary() {
-        let s = memory_database().day_summary(NOW, Arc::new(Utc)).unwrap();
+        let s = memory_database()
+            .day_summary(0, NOW, Arc::new(Utc))
+            .unwrap();
         assert_eq!(s.total_secs, 0);
         assert_eq!(s.hours, vec![0; 24]);
         assert!(s.categories.is_empty() && s.apps.is_empty());
@@ -584,5 +860,107 @@ mod tests {
         let first = category_color(default_theme_name(), Some(0));
         let grey = category_color(default_theme_name(), None);
         assert_ne!(first, grey);
+    }
+
+    /// A database with 14 days of demo data ending on the test's "today".
+    fn demo_database() -> Database {
+        let db = memory_database();
+        db.fill_demo_data(NOW, 14, 7, Arc::new(Utc)).unwrap();
+        db
+    }
+
+    /// Stepping Today back one day shows yesterday and allows going forward again.
+    #[test]
+    fn today_steps_back_to_yesterday() {
+        let db = demo_database();
+        let today = db.day_summary(0, NOW, Arc::new(Utc)).unwrap();
+        assert!(today.can_back && !today.can_forward);
+        let yesterday = db.day_summary(-1, NOW, Arc::new(Utc)).unwrap();
+        assert_eq!(yesterday.day, today.day - 1);
+        assert!(yesterday.can_forward);
+    }
+
+    /// Stepping stops at the first recorded day (the demo has 14 days).
+    #[test]
+    fn stepping_stops_at_the_first_recorded_day() {
+        let db = demo_database();
+        let oldest = db.day_summary(-13, NOW, Arc::new(Utc)).unwrap();
+        assert!(!oldest.can_back);
+    }
+
+    /// The 7 day period lists seven days, oldest first, each with 24 hours.
+    #[test]
+    fn the_week_lists_seven_days() {
+        let db = demo_database();
+        let p = db
+            .period_summary(Period::Week, 0, None, NOW, Arc::new(Utc))
+            .unwrap();
+        assert_eq!(p.days.len(), 7);
+        assert!(p.days.windows(2).all(|w| w[0].day < w[1].day));
+        assert!(p.days.iter().all(|d| d.hours.len() == 24));
+        assert!(!p.by_month);
+        assert!(p.total_secs > 0 && p.active_days > 0);
+        assert!(p.can_back && !p.can_forward);
+    }
+
+    /// The calendar week starts on Monday and stops at today (a Friday here).
+    #[test]
+    fn the_calendar_week_stops_at_today() {
+        let db = demo_database();
+        let p = db
+            .period_summary(Period::CalWeek, 0, None, NOW, Arc::new(Utc))
+            .unwrap();
+        // Monday to Friday.
+        assert_eq!(p.days.len(), 5);
+    }
+
+    /// The year and the quarter are summed by month, and all time cannot step.
+    #[test]
+    fn long_periods_are_summed_by_month() {
+        let db = demo_database();
+        let year = db
+            .period_summary(Period::Year, 0, None, NOW, Arc::new(Utc))
+            .unwrap();
+        assert!(year.by_month && !year.months.is_empty());
+        let all = db
+            .period_summary(Period::All, 0, None, NOW, Arc::new(Utc))
+            .unwrap();
+        assert_eq!(all.label, "All time");
+        assert!(!all.can_back && !all.can_forward);
+        let quarter = db
+            .period_summary(Period::Quarter, 0, None, NOW, Arc::new(Utc))
+            .unwrap();
+        assert!(quarter.by_month);
+    }
+
+    /// A custom span is used as given.
+    #[test]
+    fn a_custom_span_picks_its_days() {
+        let db = demo_database();
+        let span = CustomSpan {
+            first: 19_995,
+            last: 19_997,
+        };
+        let p = db
+            .period_summary(Period::Custom, 0, Some(span), NOW, Arc::new(Utc))
+            .unwrap();
+        assert_eq!(p.days.len(), 3);
+        assert_eq!(p.days[0].day, 19_995);
+    }
+
+    /// Typed dates become a span: reversed order is fixed, an empty end means
+    /// today, an end in the future is cut back, a start in the future is refused.
+    #[test]
+    fn typed_dates_become_a_span() {
+        let zones = || -> Arc<dyn ZoneOffsets> { Arc::new(Utc) };
+        // 20000 days after 1970-01-01 is 2024-10-04.
+        let span = custom_range("2024-10-01".into(), "".into(), NOW, zones()).unwrap();
+        assert_eq!((span.first, span.last), (19_997, 20_000));
+        let swapped = custom_range("2024-10-03".into(), "2024-10-01".into(), NOW, zones()).unwrap();
+        assert_eq!((swapped.first, swapped.last), (19_997, 19_999));
+        let cut = custom_range("2024-10-01".into(), "2030-01-01".into(), NOW, zones()).unwrap();
+        assert_eq!(cut.last, 20_000);
+        assert!(custom_range("2030-01-01".into(), "".into(), NOW, zones()).is_err());
+        assert!(custom_range("nonsense".into(), "".into(), NOW, zones()).is_err());
     }
 }

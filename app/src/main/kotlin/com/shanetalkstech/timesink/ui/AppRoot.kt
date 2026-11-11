@@ -85,7 +85,7 @@ fun AppRoot(refreshKey: Int) {
                 }
                 // Hand back both the open database and today's numbers; the
                 // state is updated below, on the main thread.
-                db to db.daySummary(now, zone)
+                db to db.daySummary(0L, now, zone)
             }
             database = opened
             summary = loaded
