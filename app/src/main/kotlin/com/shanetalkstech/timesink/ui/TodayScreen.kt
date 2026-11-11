@@ -15,17 +15,17 @@ import androidx.compose.ui.unit.dp
 import uniffi.timesink_ffi.DaySummary
 
 /** Screens at least this wide show two columns (an unfolded foldable, a tablet). */
-private val TWO_COLUMNS_DP = 600.dp
+val TWO_COLUMNS_DP = 600.dp
 
 /**
- * The Today screen: where today's time went.
+ * The Today screen: where one day's time went.
  *
  * On a narrow screen everything stacks in one scrolling column. On a wide one
  * (an unfolded foldable, a tablet) it splits in two like the terminal app:
  * categories and applications on the left, the day's timeline and listening on
  * the right.
  *
- * @param summary today's numbers from Rust.
+ * @param summary the day's numbers from Rust.
  */
 @Composable
 fun TodayScreen(summary: DaySummary) {
@@ -33,60 +33,26 @@ fun TodayScreen(summary: DaySummary) {
         if (maxWidth >= TWO_COLUMNS_DP) {
             Row(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
                 Column(modifier = Modifier.weight(0.5f).padding(end = 6.dp)) {
-                    CategoriesPanel(summary)
+                    CategoriesPanel(summary.totalSecs, summary.categories, WIDE_NAME_COLUMN_CHARS)
                     Spacer(Modifier.height(8.dp))
-                    ApplicationsPanel(summary)
+                    ApplicationsPanel(summary.apps, WIDE_NAME_COLUMN_CHARS)
                 }
                 Column(modifier = Modifier.weight(0.5f).padding(start = 6.dp)) {
                     TimelinePanel(summary)
                     Spacer(Modifier.height(8.dp))
-                    ListeningPanel(summary)
+                    ListeningPanel(summary.listeningSecs, summary.listening, WIDE_NAME_COLUMN_CHARS)
                 }
             }
         } else {
             Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
-                CategoriesPanel(summary)
+                CategoriesPanel(summary.totalSecs, summary.categories)
                 Spacer(Modifier.height(8.dp))
-                ApplicationsPanel(summary)
+                ApplicationsPanel(summary.apps)
                 Spacer(Modifier.height(8.dp))
                 TimelinePanel(summary)
                 Spacer(Modifier.height(8.dp))
-                ListeningPanel(summary)
+                ListeningPanel(summary.listeningSecs, summary.listening)
             }
-        }
-    }
-}
-
-/** The "Categories" panel: one bar per category, biggest first, with today's total in the title. */
-@Composable
-private fun CategoriesPanel(summary: DaySummary) {
-    val colors = LocalTimesinkColors.current
-    TuiPanel(
-        title = " Categories · ${formatDuration(summary.totalSecs)} ",
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        if (summary.categories.isEmpty()) {
-            MonoText(text = "nothing recorded yet", color = colors.muted)
-        }
-        // Bars are scaled against the biggest category, wherever it is in the list.
-        val max = summary.categories.maxOfOrNull { it.secs } ?: 1L
-        for (row in summary.categories) {
-            BarRow(row.name, row.secs, max, categoryColorFor(row.colorIndex))
-        }
-    }
-}
-
-/** The "Applications" panel: one bar per app, coloured by the app's category. */
-@Composable
-private fun ApplicationsPanel(summary: DaySummary) {
-    val colors = LocalTimesinkColors.current
-    TuiPanel(title = " Applications ", modifier = Modifier.fillMaxWidth()) {
-        if (summary.apps.isEmpty()) {
-            MonoText(text = "nothing recorded yet", color = colors.muted)
-        }
-        val max = summary.apps.maxOfOrNull { it.secs } ?: 1L
-        for (row in summary.apps) {
-            BarRow(row.name, row.secs, max, categoryColorFor(row.colorIndex))
         }
     }
 }
@@ -101,25 +67,6 @@ private fun TimelinePanel(summary: DaySummary) {
         HourAxis()
         if (summary.timeline.isEmpty()) {
             MonoText(text = "nothing recorded yet", color = colors.muted)
-        }
-    }
-}
-
-/** The "Listening" panel: media played in the background, counted separately from focus time. */
-@Composable
-private fun ListeningPanel(summary: DaySummary) {
-    val colors = LocalTimesinkColors.current
-    TuiPanel(
-        title = " Listening · ${formatDuration(summary.listeningSecs)} ",
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        if (summary.listening.isEmpty()) {
-            MonoText(text = "no media today", color = colors.muted)
-        }
-        val max = summary.listening.maxOfOrNull { it.secs } ?: 1L
-        for (row in summary.listening) {
-            // Players have no category colour, so they use the banner-end colour.
-            BarRow(row.name, row.secs, max, colors.bannerEnd)
         }
     }
 }

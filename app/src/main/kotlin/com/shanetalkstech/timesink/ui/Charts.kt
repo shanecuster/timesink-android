@@ -28,13 +28,22 @@ private const val DAY_SECS = 86_400f
  * name and the time, and its length is [secs] compared with [max] (the biggest
  * value in the list), so the biggest row always fills the whole bar.
  *
- * @param name the label on the left (cut short if too long for the column).
+ * @param name the label on the left. A name longer than [nameChars] is cut short
+ *   and ends in an ellipsis (`…`) so it is clear something is missing.
  * @param secs the time this row stands for.
  * @param max the biggest time in the list, for scaling.
  * @param color the bar colour, usually the category's colour.
+ * @param nameChars how many characters the name column holds. Wide screens pass
+ *   a larger number so fewer names are cut.
  */
 @Composable
-fun BarRow(name: String, secs: Long, max: Long, color: Color) {
+fun BarRow(
+    name: String,
+    secs: Long,
+    max: Long,
+    color: Color,
+    nameChars: Int = NAME_COLUMN_CHARS,
+) {
     val colors = LocalTimesinkColors.current
     // The share of the bar to fill, from 0.0 to 1.0. `coerceIn` keeps it valid
     // even if the numbers are odd, and a tiny share still shows a sliver.
@@ -44,10 +53,11 @@ fun BarRow(name: String, secs: Long, max: Long, color: Color) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // The name column has a fixed width so all the bars start at the same x.
+        // Each character of the monospace font is about 8dp wide at this size.
         MonoText(
-            text = name.take(NAME_COLUMN_CHARS),
+            text = ellipsize(name, nameChars),
             color = colors.text,
-            modifier = Modifier.width(NAME_COLUMN_WIDTH_DP.dp),
+            modifier = Modifier.width((nameChars * CHAR_WIDTH_DP + NAME_GAP_DP).dp),
         )
         // The bar: an empty track with the filled part drawn over it.
         Box(modifier = Modifier.weight(1f).height(10.dp).background(colors.border)) {
@@ -68,17 +78,30 @@ fun BarRow(name: String, secs: Long, max: Long, color: Color) {
     }
 }
 
-/** How many characters of a name the name column shows. */
-private const val NAME_COLUMN_CHARS = 12
+/** How many characters of a name the name column shows by default (a phone). */
+const val NAME_COLUMN_CHARS = 12
 
-/** Width of the name column: 12 characters of 13sp monospace text, plus a gap. */
-private const val NAME_COLUMN_WIDTH_DP = 100
+/** How many characters of a name the column shows on a wide screen. */
+const val WIDE_NAME_COLUMN_CHARS = 16
+
+/** Width of one character of the 13sp monospace text, in dp (rounded up). */
+private const val CHAR_WIDTH_DP = 8
+
+/** Extra space after the name column, so the bar does not touch the text. */
+private const val NAME_GAP_DP = 6
 
 /** How many characters wide the time column is (`10h 05m` is the longest). */
 private const val TIME_COLUMN_CHARS = 7
 
 /** Width of the time column, with a small gap on its left. */
 private const val TIME_COLUMN_WIDTH_DP = 62
+
+/**
+ * Cuts [text] to at most [chars] characters, ending it with `…` when something
+ * was removed, so a long name never looks like a complete one.
+ */
+fun ellipsize(text: String, chars: Int): String =
+    if (text.length <= chars) text else text.take((chars - 1).coerceAtLeast(1)) + "…"
 
 /**
  * The hour-by-hour bar chart: 24 bars, one per hour of the day, as tall as that
