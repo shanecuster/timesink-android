@@ -5,8 +5,10 @@ screen-time monitor. It shows the same totals as the terminal app on your
 phone, can sync with your own CouchDB, and can record the phone's own screen
 time. The look imitates the terminal app.
 
-**Status:** just started. This first version only opens a screen painted with
-the shared colour theme, to prove the Rust core is wired in.
+**Status:** just started. The Today screen works (banner, period tabs,
+categories, applications, timeline, listening); the other periods, sync and
+phone usage come next. Debug builds fill an empty database with made-up demo
+data so the screens can be tried and photographed; release builds start empty.
 
 ## How it is built
 

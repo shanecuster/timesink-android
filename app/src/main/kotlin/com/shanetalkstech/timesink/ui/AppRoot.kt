@@ -1,68 +1,137 @@
 package com.shanetalkstech.timesink.ui
 
+import android.content.pm.ApplicationInfo
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
-import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import com.shanetalkstech.timesink.DeviceZone
+import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import uniffi.timesink_ffi.Database
+import uniffi.timesink_ffi.DaySummary
 import uniffi.timesink_ffi.defaultThemeName
 import uniffi.timesink_ffi.listThemes
 
+/** The name this phone is stored under in the data. A setting arrives with sync. */
+private const val DEVICE_ID = "phone"
+
+/** Days of made-up data a debug build creates when its database is empty. */
+private const val DEMO_DAYS = 60L
+
+/** Any fixed number: the same seed always makes the same demo days. */
+private const val DEMO_SEED = 7UL
+
 /**
- * The root of the screen. For now it only proves the whole chain works: the
- * Rust core is loaded, its colour themes are read, and the screen is painted
- * with the default one. The dashboard tabs arrive in the next steps.
+ * The root of the screen: opens the database, loads today's numbers, and shows
+ * the banner, the period tabs and the selected period's screen.
+ *
+ * In a *debug* build (the Run button in Android Studio) an empty database is
+ * filled with made-up demo data so the screens can be tried and photographed
+ * before sync exists. A release build never does this: it starts empty.
+ *
+ * @param refreshKey a number that goes up each time the app comes back to the
+ *   front; a change makes the numbers load again.
  */
 @Composable
-fun AppRoot() {
-    // `remember` keeps the value across redraws so the (cheap) call into Rust
-    // is made once, not every time Compose repaints the screen.
+fun AppRoot(refreshKey: Int) {
+    val context = LocalContext.current
+
+    // The colour theme: the default one by name, falling back to the first.
     val palette = remember {
         val themes = listThemes()
-        // The default theme by name; fall back to the first one if it is missing.
         themes.firstOrNull { it.name == defaultThemeName() } ?: themes.first()
     }
     val colors = remember(palette) { palette.toColors() }
 
-    // Make the colours available to every composable below.
-    CompositionLocalProvider(LocalTimesinkColors provides colors) {
+    // What the screen shows: today's numbers, or an error message, or neither yet.
+    var summary by remember { mutableStateOf<DaySummary?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var period by remember { mutableStateOf(Period.TODAY) }
+
+    // The database is opened once and kept for the life of this screen.
+    var database by remember { mutableStateOf<Database?>(null) }
+
+    // Runs when the screen first appears and again whenever `refreshKey` changes.
+    LaunchedEffect(refreshKey) {
+        try {
+            // Disk work must not happen on the thread that draws the screen, so
+            // it runs on the IO thread pool and this coroutine waits for it.
+            val (opened, loaded) = withContext(Dispatchers.IO) {
+                val db = database ?: Database.open(
+                    File(context.filesDir, "timesink.db").path,
+                    DEVICE_ID,
+                )
+                val zone = DeviceZone()
+                val now = System.currentTimeMillis() / 1000L
+                // Demo data: debug builds only, and only into an empty database.
+                val debuggable = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+                if (debuggable && db.isEmpty()) {
+                    db.fillDemoData(now, DEMO_DAYS, DEMO_SEED, zone)
+                }
+                // Hand back both the open database and today's numbers; the
+                // state is updated below, on the main thread.
+                db to db.daySummary(now, zone)
+            }
+            database = opened
+            summary = loaded
+            error = null
+        } catch (e: Exception) {
+            // Show the problem on screen instead of crashing.
+            error = e.explain()
+        }
+    }
+
+    // Make the colours and theme name available to every composable below.
+    CompositionLocalProvider(
+        LocalTimesinkColors provides colors,
+        LocalThemeName provides palette.name,
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .background(colors.background)
-                // Keep text clear of the status bar, the navigation bar and a
-                // camera cut-out (the app draws edge to edge).
+                // Keep content clear of the status bar, navigation bar and camera
+                // cut-out (the app draws edge to edge).
                 .safeDrawingPadding()
-                .padding(16.dp),
+                .padding(horizontal = 12.dp, vertical = 8.dp),
         ) {
-            // BasicText is Compose's plainest text widget; the style carries
-            // the colour, font and size (no extra library is needed).
-            BasicText(
-                text = "timesink",
-                style = TextStyle(
-                    color = colors.accent,
-                    fontFamily = MonoFont,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 24.sp,
-                ),
-            )
-            BasicText(
-                text = "theme: ${palette.name}",
-                style = TextStyle(
-                    color = colors.muted,
-                    fontFamily = MonoFont,
-                    fontSize = 14.sp,
-                ),
-            )
+            val today = summary
+            if (today != null) {
+                Banner(today)
+                Spacer(Modifier.height(8.dp))
+            } else {
+                MonoText(text = "t i m e s i n k", color = colors.accent, bold = true)
+            }
+            PeriodTabs(selected = period, onSelect = { period = it })
+            Spacer(Modifier.height(8.dp))
+
+            error?.let { MonoText(text = it, color = colors.danger) }
+
+            if (today != null) {
+                if (period == Period.TODAY) {
+                    TodayScreen(today)
+                } else {
+                    // The other periods come in the next step.
+                    TuiPanel(title = " ${period.label} ") {
+                        MonoText(text = "coming in the next step", color = colors.muted)
+                    }
+                }
+            }
         }
     }
 }

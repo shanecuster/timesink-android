@@ -1,6 +1,8 @@
 package com.shanetalkstech.timesink.ui
 
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
@@ -9,6 +11,7 @@ import com.shanetalkstech.timesink.R
 import uniffi.timesink_ffi.FfiException
 import uniffi.timesink_ffi.RgbColor
 import uniffi.timesink_ffi.ThemePalette
+import uniffi.timesink_ffi.categoryColor
 
 /**
  * The app's monospace font: JetBrains Mono, bundled in `res/font` (SIL Open
@@ -109,3 +112,23 @@ val LocalTimesinkColors = compositionLocalOf {
  */
 fun Throwable.explain(): String =
     (this as? FfiException.Failed)?.detail ?: "${this::class.simpleName}: ${this.message}"
+
+/**
+ * The name of the theme currently in use, provided next to [LocalTimesinkColors].
+ * It is needed to ask Rust for category colours, which depend on the theme.
+ */
+val LocalThemeName = compositionLocalOf { "Everforest" }
+
+/**
+ * The bar colour for a category, from its colour slot number in the current
+ * theme (the same colour the terminal app uses). A `null` slot means the
+ * category has no colour of its own and gets the theme's grey.
+ *
+ * `remember` keeps the answer so Rust is asked once per theme and slot, not on
+ * every redraw.
+ */
+@Composable
+fun categoryColorFor(colorIndex: UInt?): Color {
+    val themeName = LocalThemeName.current
+    return remember(themeName, colorIndex) { categoryColor(themeName, colorIndex).toColor() }
+}

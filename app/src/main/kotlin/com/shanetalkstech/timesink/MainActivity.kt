@@ -4,6 +4,9 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.setValue
 import com.shanetalkstech.timesink.ui.AppRoot
 
 /**
@@ -15,6 +18,12 @@ import com.shanetalkstech.timesink.ui.AppRoot
  * do: it just hands the screen over to Compose.
  */
 class MainActivity : ComponentActivity() {
+
+    /**
+     * Counts how many times the app has come back to the front. It is Compose
+     * state, so the screen reloads its numbers whenever it goes up.
+     */
+    private var resumes by mutableIntStateOf(0)
 
     /**
      * Called by Android once, when the screen is created.
@@ -34,6 +43,16 @@ class MainActivity : ComponentActivity() {
 
         // `setContent` gives Compose the root of the screen. Everything from
         // here down is `@Composable` functions.
-        setContent { AppRoot() }
+        setContent { AppRoot(refreshKey = resumes) }
+    }
+
+    /**
+     * Called by Android each time the screen comes to the front (including the
+     * first time). Bumping the counter makes the numbers load again, so the
+     * screen is current when you open the app.
+     */
+    override fun onResume() {
+        super.onResume()
+        resumes++
     }
 }
