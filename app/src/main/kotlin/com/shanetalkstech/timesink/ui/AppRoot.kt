@@ -20,11 +20,14 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.shanetalkstech.timesink.DeviceZone
 import java.io.File
+import java.time.LocalDate
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import uniffi.timesink_ffi.CustomSpan
 import uniffi.timesink_ffi.Database
 import uniffi.timesink_ffi.DaySummary
 import uniffi.timesink_ffi.PeriodSummary
+import uniffi.timesink_ffi.customRange
 import uniffi.timesink_ffi.defaultThemeName
 import uniffi.timesink_ffi.listThemes
 
@@ -73,11 +76,20 @@ fun AppRoot(refreshKey: Int) {
     var shownRange by remember { mutableStateOf<PeriodSummary?>(null) }
     var shownFor by remember { mutableStateOf(Period.TODAY) }
 
+    // The days chosen for the Custom tab (`null` until the user picks some), and
+    // the date prompt that chooses them: open or not, the two typed texts, and
+    // the message about the last attempt.
+    var custom by remember { mutableStateOf<CustomSpan?>(null) }
+    var promptOpen by remember { mutableStateOf(false) }
+    var promptFrom by remember { mutableStateOf("") }
+    var promptTo by remember { mutableStateOf("") }
+    var promptError by remember { mutableStateOf<String?>(null) }
+
     // The database is opened once and kept for the life of this screen.
     var database by remember { mutableStateOf<Database?>(null) }
 
     // Runs when the screen first appears and again whenever `refreshKey` changes.
-    LaunchedEffect(refreshKey, period, offset) {
+    LaunchedEffect(refreshKey, period, offset, custom) {
         try {
             // Disk work must not happen on the thread that draws the screen, so
             // it runs on the IO thread pool and this coroutine waits for it.
@@ -85,6 +97,7 @@ fun AppRoot(refreshKey: Int) {
             // these values must not change underneath it.
             val loadedFor = period
             val loadedOffset = offset
+            val loadedCustom = custom
             val data = withContext(Dispatchers.IO) {
                 val db = database ?: Database.open(
                     File(context.filesDir, "timesink.db").path,
@@ -108,7 +121,7 @@ fun AppRoot(refreshKey: Int) {
                 val range = if (loadedFor == Period.TODAY) {
                     null
                 } else {
-                    db.periodSummary(loadedFor, loadedOffset, null, now, zone)
+                    db.periodSummary(loadedFor, loadedOffset, loadedCustom, now, zone)
                 }
                 Loaded(db, realToday, day, range)
             }
@@ -152,11 +165,49 @@ fun AppRoot(refreshKey: Int) {
                 onSelect = {
                     period = it
                     offset = 0L
+                    // The first time Custom is chosen there are no days yet, so ask.
+                    if (it == Period.CUSTOM && custom == null) {
+                        promptError = null
+                        promptOpen = true
+                    }
                 },
             )
             Spacer(Modifier.height(8.dp))
 
             error?.let { MonoText(text = it, color = colors.danger) }
+
+            // The date prompt replaces the screen's content while it is open.
+            if (promptOpen && period == Period.CUSTOM) {
+                DatePrompt(
+                    from = promptFrom,
+                    to = promptTo,
+                    error = promptError,
+                    onFromChange = { promptFrom = it },
+                    onToChange = { promptTo = it },
+                    onShow = {
+                        try {
+                            // Rust checks the dates with the same rules as the
+                            // terminal app and turns them into a span of days.
+                            custom = customRange(
+                                promptFrom,
+                                promptTo,
+                                System.currentTimeMillis() / 1000L,
+                                DeviceZone(),
+                            )
+                            offset = 0L
+                            promptOpen = false
+                            promptError = null
+                        } catch (e: Exception) {
+                            promptError = e.explain()
+                        }
+                    },
+                    onCancel = {
+                        promptOpen = false
+                        promptError = null
+                    },
+                )
+                Spacer(Modifier.height(8.dp))
+            }
 
             val day = shownDay
             if (today != null && day != null) {
@@ -180,6 +231,20 @@ fun AppRoot(refreshKey: Int) {
                             onBack = { if (range.canBack) offset -= 1 },
                             onForward = { if (range.canForward) offset += 1 },
                         )
+                        // Custom also has a way back to the prompt, prefilled with the
+                        // days now shown.
+                        if (period == Period.CUSTOM && !promptOpen) {
+                            ActionButton(
+                                label = "choose dates",
+                                onClick = {
+                                    val shown = custom
+                                    promptFrom = shown?.let { LocalDate.ofEpochDay(it.first).toString() } ?: ""
+                                    promptTo = shown?.let { LocalDate.ofEpochDay(it.last).toString() } ?: ""
+                                    promptError = null
+                                    promptOpen = true
+                                },
+                            )
+                        }
                         RangeScreen(range, today = today.day)
                     }
                 }

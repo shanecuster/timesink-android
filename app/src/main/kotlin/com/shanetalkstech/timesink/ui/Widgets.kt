@@ -1,5 +1,7 @@
 package com.shanetalkstech.timesink.ui
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -8,6 +10,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /**
@@ -50,5 +53,25 @@ fun MonoText(
             fontFeatureSettings = NO_LIGATURES,
         ),
         modifier = modifier,
+    )
+}
+
+/**
+ * A tappable `[ label ]`, the terminal way of drawing a button.
+ *
+ * @param label the words inside the brackets.
+ * @param onClick called when it is tapped.
+ * @param modifier optional layout tweaks from the caller.
+ */
+@Composable
+fun ActionButton(label: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val colors = LocalTimesinkColors.current
+    MonoText(
+        text = "[ $label ]",
+        color = colors.accent,
+        bold = true,
+        size = 14.sp,
+        // The padding makes the tap target bigger than the text itself.
+        modifier = modifier.clickable(onClick = onClick).padding(horizontal = 6.dp, vertical = 10.dp),
     )
 }
