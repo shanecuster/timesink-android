@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  PLACEHOLDER launcher icon (foreground layer): three rising bars, like a tiny
+  bar chart. It is deliberately plain; the real timesink icon replaces it later.
+  The adaptive-icon "safe zone" is the middle 66 x 66 of the 108 x 108 canvas,
+  so everything is drawn inside it.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#A7C080"
+        android:pathData="M30,72h12v-14h-12z" />
+    <path
+        android:fillColor="#DBBC7F"
+        android:pathData="M48,72h12v-26h-12z" />
+    <path
+        android:fillColor="#E67E80"
+        android:pathData="M66,72h12v-38h-12z" />
+</vector>
