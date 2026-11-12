@@ -121,7 +121,7 @@ fun AppRoot(refreshKey: Int) {
                 val range = if (loadedFor == Period.TODAY) {
                     null
                 } else {
-                    db.periodSummary(loadedFor, loadedOffset, loadedCustom, now, zone)
+                    db.periodSummary(loadedFor.toBridge(), loadedOffset, loadedCustom, now, zone)
                 }
                 Loaded(db, realToday, day, range)
             }

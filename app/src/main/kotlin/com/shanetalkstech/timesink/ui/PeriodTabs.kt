@@ -87,3 +87,19 @@ fun PeriodTabs(selected: Period, onSelect: (Period) -> Unit) {
         Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(colors.border))
     }
 }
+
+/**
+ * Converts the tab choice into the Rust bridge's own `Period` type. The two
+ * enums have the same names but are different Kotlin types, so the call into
+ * Rust needs this translation.
+ */
+fun Period.toBridge(): uniffi.timesink_ffi.Period = when (this) {
+    Period.TODAY -> uniffi.timesink_ffi.Period.TODAY
+    Period.WEEK -> uniffi.timesink_ffi.Period.WEEK
+    Period.MONTH -> uniffi.timesink_ffi.Period.MONTH
+    Period.YEAR -> uniffi.timesink_ffi.Period.YEAR
+    Period.ALL -> uniffi.timesink_ffi.Period.ALL
+    Period.CAL_WEEK -> uniffi.timesink_ffi.Period.CAL_WEEK
+    Period.QUARTER -> uniffi.timesink_ffi.Period.QUARTER
+    Period.CUSTOM -> uniffi.timesink_ffi.Period.CUSTOM
+}
