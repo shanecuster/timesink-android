@@ -52,6 +52,7 @@ use timesink_core::db::{Db, MERGE_GAP_SECS};
 use timesink_core::domains::DomainConfig;
 use timesink_core::model::WindowSnapshot;
 use timesink_core::period::{self, Range};
+use timesink_core::syncdoc::ConfLists;
 use timesink_core::theme::{self, Rgb, Theme};
 use timesink_core::{demo, stats};
 use timesink_sync::{self as sync, HttpRemote, SyncConfig};
@@ -442,6 +443,10 @@ pub struct SyncOutcome {
     pub downloaded: u32,
     /// Things worth a look that did not stop the sync.
     pub warnings: Vec<String>,
+    /// Whether this phone's app names and categories were sent.
+    pub lists_uploaded: bool,
+    /// How many other computers' name lists were received.
+    pub lists_downloaded: u32,
 }
 
 /// How syncing has been going, for the sync screen.
@@ -558,8 +563,9 @@ pub struct Database {
     map: RwLock<AppMap>,
     /// Where the user's own app edits are saved (an `apps.conf` file).
     conf_path: PathBuf,
-    /// Site names and categories for the Sites panel.
-    sites: DomainConfig,
+    /// Site names and categories for the Sites panel (built-in list plus the ones
+    /// shared by other computers). Behind a lock because a sync replaces it.
+    sites: RwLock<DomainConfig>,
     /// The database file, so a sync can use a connection of its own.
     path: PathBuf,
     /// This phone's name in the data (the device name typed in the app).
@@ -570,14 +576,34 @@ pub struct Database {
 impl Database {
     /// Wraps an open core database together with the built-in app list.
     fn from_db(db: Db, conf_path: PathBuf, path: PathBuf, device_id: String) -> Database {
+        // Built before the database goes behind its lock: the lists include the
+        // ones other computers have shared (kept in the database).
+        let map = build_map(&conf_path, &db);
+        let sites = build_sites(&db);
         Database {
             db: Mutex::new(db),
-            map: RwLock::new(build_map(&conf_path)),
+            map: RwLock::new(map),
             conf_path,
-            sites: DomainConfig::from_conf(DEFAULT_SITES),
+            sites: RwLock::new(sites),
             path,
             device_id,
         }
+    }
+
+    /// Builds the app and site lists again from the built-in lists, the phone's
+    /// own `apps.conf` and the lists other computers shared. Called after anything
+    /// that could change them.
+    fn rebuild_lists(&self) -> Result<(), FfiError> {
+        let (map, sites) = {
+            let db = self.lock()?;
+            (build_map(&self.conf_path, &db), build_sites(&db))
+        };
+        let poisoned = || FfiError::Failed {
+            detail: "a list lock was poisoned by an earlier panic".to_string(),
+        };
+        *self.map.write().map_err(|_| poisoned())? = map;
+        *self.sites.write().map_err(|_| poisoned())? = sites;
+        Ok(())
     }
 
     /// Reads the app list. A poisoned lock is reported rather than crashing.
@@ -608,7 +634,8 @@ impl Database {
 
     /// The same, for a site category.
     fn site_color_index(&self, category: &str) -> Option<u32> {
-        self.sites
+        let config = self.sites.read().ok()?;
+        config
             .sites
             .categories()
             .iter()
@@ -666,7 +693,16 @@ impl Database {
         }
         let db = Db::open(&self.path, &self.device_id)?;
         let mut remote = HttpRemote::new(config);
-        let outcome = sync::run(&db, &mut remote);
+        // Share the phone's own names and categories too (the phone has no site list
+        // of its own to share).
+        let (apps, apps_updated) = read_user_conf(&self.conf_path);
+        let own = ConfLists {
+            apps,
+            apps_updated,
+            domains: String::new(),
+            domains_updated: 0,
+        };
+        let outcome = sync::run_with_lists(&db, &mut remote, Some(&own));
         // Remember how it went; failing to write the note is not worth failing over.
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -679,11 +715,15 @@ impl Database {
             Err(_) => db.set_sync_state("last_failed", &now.to_string()),
         };
         let report = outcome?;
+        // Lists other computers shared may have just arrived: use them from now on.
+        self.rebuild_lists()?;
         Ok(SyncOutcome {
             uploaded: report.uploaded as u32,
             removed: report.removed as u32,
             downloaded: report.downloaded as u32,
             warnings: report.warnings,
+            lists_uploaded: report.lists_uploaded,
+            lists_downloaded: report.lists_downloaded as u32,
         })
     }
 
@@ -747,10 +787,7 @@ impl Database {
             }
         }
         if named_any {
-            let fresh = build_map(&self.conf_path);
-            if let Ok(mut map) = self.map.write() {
-                *map = fresh;
-            }
+            self.rebuild_lists()?;
         }
         Ok(UsageImport {
             recorded,
@@ -790,12 +827,7 @@ impl Database {
         for raw in &raws {
             appmap::append_entry(&self.conf_path, raw, &display, &category)?;
         }
-        let fresh = build_map(&self.conf_path);
-        let mut map = self.map.write().map_err(|_| FfiError::Failed {
-            detail: "the app list lock was poisoned by an earlier panic".to_string(),
-        })?;
-        *map = fresh;
-        Ok(())
+        self.rebuild_lists()
     }
 
     /// True when nothing has been recorded or synced yet.
@@ -995,7 +1027,12 @@ impl Database {
             Snapshot::load(db, &map, view, range, device, now, tz)?
         };
         // Website time comes from the same database (synced from the desktop).
-        snapshot.attach_sites(db, &self.sites, device, now, tz)?;
+        {
+            let sites = self.sites.read().map_err(|_| FfiError::Failed {
+                detail: "the site list lock was poisoned by an earlier panic".to_string(),
+            })?;
+            snapshot.attach_sites(db, &sites, device, now, tz)?;
+        }
         Ok(Loaded {
             snapshot,
             label: if view == View::All {
@@ -1109,15 +1146,45 @@ fn usage_stretches(
     (out, still)
 }
 
-/// The app list: the built-in apps, then the user's own `apps.conf` after them
-/// (a later line wins, so the user's edits override the built-in ones).
-fn build_map(conf_path: &Path) -> AppMap {
-    let mut text = DEFAULT_APPS.to_string();
-    if let Ok(user) = std::fs::read_to_string(conf_path) {
-        text.push('\n');
-        text.push_str(&user);
-    }
-    AppMap::from_conf(&text).with_browser_defaults()
+/// The phone's own `apps.conf` text and when it last changed (Unix seconds); empty
+/// and 0 when there is no file yet.
+fn read_user_conf(conf_path: &Path) -> (String, i64) {
+    let text = std::fs::read_to_string(conf_path).unwrap_or_default();
+    let changed = std::fs::metadata(conf_path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_secs() as i64);
+    (text, changed)
+}
+
+/// The app list: the built-in apps, the phone's own edits, and the lists other
+/// computers shared. For the same app the list changed most recently wins (the
+/// built-in list counts as oldest of all); colours follow the order built-in, own,
+/// then others.
+fn build_map(conf_path: &Path, db: &Db) -> AppMap {
+    let (user, user_updated) = read_user_conf(conf_path);
+    let remote = db.remote_confs().unwrap_or_default();
+    let mut layers: Vec<(&str, i64)> = vec![(DEFAULT_APPS, 0), (user.as_str(), user_updated)];
+    layers.extend(
+        remote
+            .iter()
+            .map(|(_, l)| (l.apps.as_str(), l.apps_updated)),
+    );
+    AppMap::from_layers(&layers).with_browser_defaults()
+}
+
+/// The site list: the built-in sites plus the ones other computers shared, newest
+/// change winning.
+fn build_sites(db: &Db) -> DomainConfig {
+    let remote = db.remote_confs().unwrap_or_default();
+    let mut layers: Vec<(&str, i64)> = vec![(DEFAULT_SITES, 0)];
+    layers.extend(
+        remote
+            .iter()
+            .map(|(_, l)| (l.domains.as_str(), l.domains_updated)),
+    );
+    DomainConfig::default().with_site_layers(&layers)
 }
 
 /// The listening rows of a snapshot (players have no colour slot of their own).
@@ -1648,5 +1715,35 @@ mod tests {
         assert_eq!(day.apps[0].secs, 120);
         assert_eq!(day.apps[0].category, "Other");
         let _ = std::fs::remove_file(conf);
+    }
+
+    /// Lists shared by another computer are used, and the newest change wins:
+    /// a newer desktop entry beats the built-in one, and sites follow along.
+    #[test]
+    fn shared_lists_are_merged_into_the_phone() {
+        let db = memory_database();
+        // Before: `discord` is in the built-in list under Chat.
+        assert_eq!(db.map().unwrap().lookup("discord").category, "Chat");
+        {
+            let inner = db.lock().unwrap();
+            inner
+                .set_remote_conf(
+                    "mangrove",
+                    Some(&ConfLists {
+                        apps: "discord discord Social\nzerohour zerohour Work\n".into(),
+                        apps_updated: 500,
+                        domains: "github.com github Research\n".into(),
+                        domains_updated: 500,
+                    }),
+                )
+                .unwrap();
+        }
+        db.rebuild_lists().unwrap();
+        let map = db.map().unwrap();
+        assert_eq!(map.lookup("discord").category, "Social");
+        assert_eq!(map.lookup("zerohour").category, "Work");
+        assert!(db.site_color_index("Research").is_some());
+        // Built-in apps nobody overrode are still there.
+        assert_eq!(map.lookup("com.android.chrome").category, "Browser");
     }
 }

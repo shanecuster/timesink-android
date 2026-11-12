@@ -245,6 +245,11 @@ fun AppRoot(refreshKey: Int) {
                 }
                 syncFailed = false
                 syncMessage = "Sent ${outcome.uploaded} day(s), received ${outcome.downloaded} day(s)." +
+                    (if (outcome.listsUploaded || outcome.listsDownloaded > 0u)
+                        "\nNames and categories: " +
+                            (if (outcome.listsUploaded) "sent yours" else "yours unchanged") +
+                            ", received ${outcome.listsDownloaded} list(s)."
+                    else "") +
                     outcome.warnings.joinToString("") { "\n$it" }
             } catch (e: Exception) {
                 syncFailed = true
