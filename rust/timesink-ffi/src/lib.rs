@@ -43,12 +43,13 @@
 // exactly once, at the crate root, before the other exports are used.
 uniffi::setup_scaffolding!();
 
-use std::path::Path;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard};
 
-use timesink_core::appmap::AppMap;
+use timesink_core::appmap::{self, AppMap};
 use timesink_core::data::{Snapshot, View};
 use timesink_core::db::Db;
+use timesink_core::domains::DomainConfig;
 use timesink_core::model::WindowSnapshot;
 use timesink_core::period::{self, Range};
 use timesink_core::theme::{self, Rgb, Theme};
@@ -246,6 +247,22 @@ pub struct AppSecs {
     pub secs: i64,
     /// Accent colour index of the app's category.
     pub color_index: Option<u32>,
+    /// The raw app ids (Android package names) merged into this row. They are
+    /// what `set_app` needs to rename the app or move it to another category.
+    pub raws: Vec<String>,
+}
+
+/// Time on one website (recorded by the desktop browser extension and synced).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SiteSecs {
+    /// Friendly site name, such as "github".
+    pub name: String,
+    /// The site's category.
+    pub category: String,
+    /// Seconds spent.
+    pub secs: i64,
+    /// Accent colour index of the site's category.
+    pub color_index: Option<u32>,
 }
 
 /// One coloured stretch of today, for the timeline strip.
@@ -288,6 +305,8 @@ pub struct DaySummary {
     pub timeline: Vec<TimelineSpan>,
     /// Seconds of listening per player, biggest first.
     pub listening: Vec<NameSecs>,
+    /// Seconds per website, biggest first (empty when no site time exists).
+    pub sites: Vec<SiteSecs>,
 }
 
 /// The periods the dashboard can show, in the terminal app's tab order.
@@ -394,6 +413,8 @@ pub struct PeriodSummary {
     pub days: Vec<DayInfo>,
     /// One row per calendar month, oldest first.
     pub months: Vec<MonthInfo>,
+    /// Seconds per website, biggest first (empty when no site time exists).
+    pub sites: Vec<SiteSecs>,
 }
 
 /// The built-in application names and categories used until the phone has its
@@ -414,6 +435,17 @@ bitwarden                bitwarden      Passwords
 com.gabm.satty           satty          Utilities
 ";
 
+/// Built-in site names and categories (the `domains.conf` format: site, display
+/// name, category). Used for the Sites panel until sites become editable.
+const DEFAULT_SITES: &str = "\
+github.com         github         Development
+stackoverflow.com  stackoverflow  Development
+wikipedia.org      wikipedia      Reference
+youtube.com        youtube        Video
+reddit.com         reddit         Social
+espn.com           espn           Sports
+";
+
 // ---------------------------------------------------------------------------
 // The database
 // ---------------------------------------------------------------------------
@@ -428,18 +460,33 @@ com.gabm.satty           satty          Utilities
 pub struct Database {
     /// The real database from timesink-core, behind the lock.
     db: Mutex<Db>,
-    /// Application names and categories.
-    map: AppMap,
+    /// Application names and categories: the built-in list followed by the
+    /// user's own edits. Behind a lock because `set_app` replaces it while
+    /// other threads may be reading.
+    map: RwLock<AppMap>,
+    /// Where the user's own app edits are saved (an `apps.conf` file).
+    conf_path: PathBuf,
+    /// Site names and categories for the Sites panel.
+    sites: DomainConfig,
 }
 
 /// Helpers used only inside this crate (not exported to Kotlin).
 impl Database {
     /// Wraps an open core database together with the built-in app list.
-    fn from_db(db: Db) -> Database {
+    fn from_db(db: Db, conf_path: PathBuf) -> Database {
         Database {
             db: Mutex::new(db),
-            map: AppMap::from_conf(DEFAULT_APPS).with_browser_defaults(),
+            map: RwLock::new(build_map(&conf_path)),
+            conf_path,
+            sites: DomainConfig::from_conf(DEFAULT_SITES),
         }
+    }
+
+    /// Reads the app list. A poisoned lock is reported rather than crashing.
+    fn map(&self) -> Result<RwLockReadGuard<'_, AppMap>, FfiError> {
+        self.map.read().map_err(|_| FfiError::Failed {
+            detail: "the app list lock was poisoned by an earlier panic".to_string(),
+        })
     }
 
     /// Takes the lock and returns a guard giving access to the `Db`. The guard
@@ -454,7 +501,17 @@ impl Database {
 
     /// The position of a category in the app list, which decides its colour.
     fn color_index(&self, category: &str) -> Option<u32> {
-        self.map
+        let map = self.map.read().ok()?;
+        map.categories()
+            .iter()
+            .position(|c| c == category)
+            .map(|i| i as u32)
+    }
+
+    /// The same, for a site category.
+    fn site_color_index(&self, category: &str) -> Option<u32> {
+        self.sites
+            .sites
             .categories()
             .iter()
             .position(|c| c == category)
@@ -467,9 +524,59 @@ impl Database {
     /// Opens (creating if needed) the database file at `path`. `device_id` names
     /// this phone in the data; it is stored on every row it records.
     #[uniffi::constructor]
-    pub fn open(path: String, device_id: String) -> Result<Arc<Database>, FfiError> {
+    ///
+    /// `apps_conf_path` is the file where the user's own app names and
+    /// categories are saved (it need not exist yet).
+    pub fn open(
+        path: String,
+        device_id: String,
+        apps_conf_path: String,
+    ) -> Result<Arc<Database>, FfiError> {
         let db = Db::open(Path::new(&path), &device_id)?;
-        Ok(Arc::new(Database::from_db(db)))
+        Ok(Arc::new(Database::from_db(
+            db,
+            PathBuf::from(apps_conf_path),
+        )))
+    }
+
+    /// The devices that have data in the database (this phone, and any synced
+    /// from elsewhere), for the device filter.
+    pub fn devices(&self) -> Result<Vec<String>, FfiError> {
+        Ok(self.lock()?.devices()?)
+    }
+
+    /// The category names the app list knows, in colour order. "Other" is not
+    /// included; the editor adds it and the "new category" action itself.
+    pub fn categories(&self) -> Result<Vec<String>, FfiError> {
+        Ok(self.map()?.categories())
+    }
+
+    /// Gives every app id in `raws` the display name and category, saving the
+    /// change to the phone's `apps.conf` and re-sorting all history at once.
+    /// Nothing recorded is rewritten; only the names shown change.
+    pub fn set_app(
+        &self,
+        raws: Vec<String>,
+        display: String,
+        category: String,
+    ) -> Result<(), FfiError> {
+        // Check every line first so a bad name saves nothing at all.
+        for raw in &raws {
+            if appmap::entry_line(raw, &display, &category).is_none() {
+                return Err(FfiError::Failed {
+                    detail: "the name and category must not be empty".to_string(),
+                });
+            }
+        }
+        for raw in &raws {
+            appmap::append_entry(&self.conf_path, raw, &display, &category)?;
+        }
+        let fresh = build_map(&self.conf_path);
+        let mut map = self.map.write().map_err(|_| FfiError::Failed {
+            detail: "the app list lock was poisoned by an earlier panic".to_string(),
+        })?;
+        *map = fresh;
+        Ok(())
     }
 
     /// True when nothing has been recorded or synced yet.
@@ -525,13 +632,14 @@ impl Database {
     pub fn day_summary(
         &self,
         offset: i64,
+        device: Option<String>,
         now: i64,
         zones: Arc<dyn ZoneOffsets>,
     ) -> Result<DaySummary, FfiError> {
         // The time-zone callback as the plain function core expects.
         let tz = |ts: i64| zones.offset_at(ts);
         let db = self.lock()?;
-        let loaded = self.load(&db, View::Today, offset, None, now, &tz)?;
+        let loaded = self.load(&db, View::Today, offset, None, device.as_deref(), now, &tz)?;
         let snap = &loaded.snapshot;
 
         // Twenty-four hour slots for the day: the only day row.
@@ -561,6 +669,7 @@ impl Database {
                 })
                 .collect(),
             listening: listening_rows(snap),
+            sites: self.site_rows(snap),
         })
     }
 
@@ -573,13 +682,22 @@ impl Database {
         period: Period,
         offset: i64,
         custom: Option<CustomSpan>,
+        device: Option<String>,
         now: i64,
         zones: Arc<dyn ZoneOffsets>,
     ) -> Result<PeriodSummary, FfiError> {
         let tz = |ts: i64| zones.offset_at(ts);
         let db = self.lock()?;
         let custom = custom.map(|c| Range::new(c.first, c.last));
-        let loaded = self.load(&db, period.into(), offset, custom, now, &tz)?;
+        let loaded = self.load(
+            &db,
+            period.into(),
+            offset,
+            custom,
+            device.as_deref(),
+            now,
+            &tz,
+        )?;
         let snap = &loaded.snapshot;
         Ok(PeriodSummary {
             label: loaded.label,
@@ -613,6 +731,7 @@ impl Database {
                     active_days: m.active_days,
                 })
                 .collect(),
+            sites: self.site_rows(snap),
         })
     }
 }
@@ -635,12 +754,16 @@ impl Database {
     /// the user can step further either way. Shared by `day_summary` and
     /// `period_summary` so the two follow the same stepping rules as the
     /// terminal app (which are in core).
+    // Eight inputs, all of them plain facts about one request; a wrapper struct
+    // would only rename them.
+    #[allow(clippy::too_many_arguments)]
     fn load(
         &self,
         db: &Db,
         view: View,
         offset: i64,
         custom: Option<Range>,
+        device: Option<&str>,
         now: i64,
         tz: &dyn Fn(i64) -> i64,
     ) -> Result<Loaded, FfiError> {
@@ -648,7 +771,12 @@ impl Database {
         // The first recorded day, which the periods may not step before.
         let earliest = db.earliest_start()?.map(|t| stats::local_day(t, tz));
         let range = view.range(offset, today, earliest, custom);
-        let snapshot = Snapshot::load(db, &self.map, view, range, None, now, tz)?;
+        let mut snapshot = {
+            let map = self.map()?;
+            Snapshot::load(db, &map, view, range, device, now, tz)?
+        };
+        // Website time comes from the same database (synced from the desktop).
+        snapshot.attach_sites(db, &self.sites, device, now, tz)?;
         Ok(Loaded {
             snapshot,
             label: if view == View::All {
@@ -682,9 +810,34 @@ impl Database {
                 category: a.category.clone(),
                 secs: a.secs,
                 color_index: self.color_index(&a.category),
+                raws: a.raws.clone(),
             })
             .collect()
     }
+
+    /// The website bars of a snapshot, with their category colour slots.
+    fn site_rows(&self, snap: &Snapshot) -> Vec<SiteSecs> {
+        snap.sites
+            .iter()
+            .map(|s| SiteSecs {
+                name: s.display.clone(),
+                category: s.category.clone(),
+                secs: s.secs,
+                color_index: self.site_color_index(&s.category),
+            })
+            .collect()
+    }
+}
+
+/// The app list: the built-in apps, then the user's own `apps.conf` after them
+/// (a later line wins, so the user's edits override the built-in ones).
+fn build_map(conf_path: &Path) -> AppMap {
+    let mut text = DEFAULT_APPS.to_string();
+    if let Ok(user) = std::fs::read_to_string(conf_path) {
+        text.push('\n');
+        text.push_str(&user);
+    }
+    AppMap::from_conf(&text).with_browser_defaults()
 }
 
 /// The listening rows of a snapshot (players have no colour slot of their own).
@@ -801,9 +954,20 @@ mod tests {
     /// A Friday afternoon (UTC), after the demo data's morning work block.
     const NOW: i64 = 20_000 * 86_400 + 14 * 3_600;
 
+    /// A path for a throwaway `apps.conf`, different for every test.
+    fn temp_conf() -> PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        std::env::temp_dir().join(format!(
+            "timesink-ffi-test-{}-{}.conf",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
     /// A fresh in-memory database, wrapped the way Kotlin would hold it.
     fn memory_database() -> Database {
-        Database::from_db(Db::open_in_memory("phone").unwrap())
+        Database::from_db(Db::open_in_memory("phone").unwrap(), temp_conf())
     }
 
     /// A new database is empty, and demo data makes it not empty.
@@ -830,7 +994,7 @@ mod tests {
     fn the_day_summary_is_complete() {
         let db = memory_database();
         db.fill_demo_data(NOW, 14, 7, Arc::new(Utc)).unwrap();
-        let s = db.day_summary(0, NOW, Arc::new(Utc)).unwrap();
+        let s = db.day_summary(0, None, NOW, Arc::new(Utc)).unwrap();
         assert_eq!(s.day, 20_000);
         assert!(s.total_secs > 0);
         assert_eq!(s.hours.len(), 24);
@@ -847,7 +1011,7 @@ mod tests {
     #[test]
     fn an_empty_database_gives_an_empty_summary() {
         let s = memory_database()
-            .day_summary(0, NOW, Arc::new(Utc))
+            .day_summary(0, None, NOW, Arc::new(Utc))
             .unwrap();
         assert_eq!(s.total_secs, 0);
         assert_eq!(s.hours, vec![0; 24]);
@@ -873,9 +1037,9 @@ mod tests {
     #[test]
     fn today_steps_back_to_yesterday() {
         let db = demo_database();
-        let today = db.day_summary(0, NOW, Arc::new(Utc)).unwrap();
+        let today = db.day_summary(0, None, NOW, Arc::new(Utc)).unwrap();
         assert!(today.can_back && !today.can_forward);
-        let yesterday = db.day_summary(-1, NOW, Arc::new(Utc)).unwrap();
+        let yesterday = db.day_summary(-1, None, NOW, Arc::new(Utc)).unwrap();
         assert_eq!(yesterday.day, today.day - 1);
         assert!(yesterday.can_forward);
     }
@@ -884,7 +1048,7 @@ mod tests {
     #[test]
     fn stepping_stops_at_the_first_recorded_day() {
         let db = demo_database();
-        let oldest = db.day_summary(-13, NOW, Arc::new(Utc)).unwrap();
+        let oldest = db.day_summary(-13, None, NOW, Arc::new(Utc)).unwrap();
         assert!(!oldest.can_back);
     }
 
@@ -893,7 +1057,7 @@ mod tests {
     fn the_week_lists_seven_days() {
         let db = demo_database();
         let p = db
-            .period_summary(Period::Week, 0, None, NOW, Arc::new(Utc))
+            .period_summary(Period::Week, 0, None, None, NOW, Arc::new(Utc))
             .unwrap();
         assert_eq!(p.days.len(), 7);
         assert!(p.days.windows(2).all(|w| w[0].day < w[1].day));
@@ -908,7 +1072,7 @@ mod tests {
     fn the_calendar_week_stops_at_today() {
         let db = demo_database();
         let p = db
-            .period_summary(Period::CalWeek, 0, None, NOW, Arc::new(Utc))
+            .period_summary(Period::CalWeek, 0, None, None, NOW, Arc::new(Utc))
             .unwrap();
         // Monday to Friday.
         assert_eq!(p.days.len(), 5);
@@ -919,16 +1083,16 @@ mod tests {
     fn long_periods_are_summed_by_month() {
         let db = demo_database();
         let year = db
-            .period_summary(Period::Year, 0, None, NOW, Arc::new(Utc))
+            .period_summary(Period::Year, 0, None, None, NOW, Arc::new(Utc))
             .unwrap();
         assert!(year.by_month && !year.months.is_empty());
         let all = db
-            .period_summary(Period::All, 0, None, NOW, Arc::new(Utc))
+            .period_summary(Period::All, 0, None, None, NOW, Arc::new(Utc))
             .unwrap();
         assert_eq!(all.label, "All time");
         assert!(!all.can_back && !all.can_forward);
         let quarter = db
-            .period_summary(Period::Quarter, 0, None, NOW, Arc::new(Utc))
+            .period_summary(Period::Quarter, 0, None, None, NOW, Arc::new(Utc))
             .unwrap();
         assert!(quarter.by_month);
     }
@@ -942,7 +1106,7 @@ mod tests {
             last: 19_997,
         };
         let p = db
-            .period_summary(Period::Custom, 0, Some(span), NOW, Arc::new(Utc))
+            .period_summary(Period::Custom, 0, Some(span), None, NOW, Arc::new(Utc))
             .unwrap();
         assert_eq!(p.days.len(), 3);
         assert_eq!(p.days[0].day, 19_995);
@@ -962,5 +1126,91 @@ mod tests {
         assert_eq!(cut.last, 20_000);
         assert!(custom_range("2030-01-01".into(), "".into(), NOW, zones()).is_err());
         assert!(custom_range("nonsense".into(), "".into(), NOW, zones()).is_err());
+    }
+
+    /// Renaming an app re-sorts the history, is saved to the file, and survives
+    /// opening the database again.
+    #[test]
+    fn set_app_renames_and_is_remembered() {
+        let conf = temp_conf();
+        let db = Database::from_db(Db::open_in_memory("phone").unwrap(), conf.clone());
+        db.fill_demo_data(NOW, 3, 1, Arc::new(Utc)).unwrap();
+        let before = db.day_summary(0, None, NOW, Arc::new(Utc)).unwrap();
+        let app = before
+            .apps
+            .iter()
+            .find(|a| a.category == "Terminal")
+            .unwrap();
+        assert!(!app.raws.is_empty());
+        db.set_app(app.raws.clone(), "shell".into(), "Work".into())
+            .unwrap();
+        let after = db.day_summary(0, None, NOW, Arc::new(Utc)).unwrap();
+        assert!(
+            after
+                .apps
+                .iter()
+                .any(|a| a.name == "shell" && a.category == "Work")
+        );
+        assert!(db.categories().unwrap().contains(&"Work".to_string()));
+        // A new database object reads the saved file.
+        let again = Database::from_db(Db::open_in_memory("phone").unwrap(), conf.clone());
+        assert!(again.categories().unwrap().contains(&"Work".to_string()));
+        let _ = std::fs::remove_file(conf);
+    }
+
+    /// An empty name or category is refused and saves nothing.
+    #[test]
+    fn set_app_refuses_empty_names() {
+        let conf = temp_conf();
+        let db = Database::from_db(Db::open_in_memory("phone").unwrap(), conf.clone());
+        assert!(
+            db.set_app(vec!["a.b".into()], " ".into(), "X".into())
+                .is_err()
+        );
+        assert!(
+            db.set_app(vec!["a.b".into()], "ab".into(), "".into())
+                .is_err()
+        );
+        assert!(!conf.exists());
+    }
+
+    /// The device filter narrows the numbers, and demo websites show up.
+    #[test]
+    fn device_filter_and_sites() {
+        let db = memory_database();
+        db.fill_demo_data(NOW, 7, 7, Arc::new(Utc)).unwrap();
+        assert_eq!(db.devices().unwrap(), vec!["phone".to_string()]);
+        let all = db
+            .period_summary(Period::Week, 0, None, None, NOW, Arc::new(Utc))
+            .unwrap();
+        let phone = db
+            .period_summary(
+                Period::Week,
+                0,
+                None,
+                Some("phone".into()),
+                NOW,
+                Arc::new(Utc),
+            )
+            .unwrap();
+        let other = db
+            .period_summary(
+                Period::Week,
+                0,
+                None,
+                Some("laptop".into()),
+                NOW,
+                Arc::new(Utc),
+            )
+            .unwrap();
+        assert_eq!(all.total_secs, phone.total_secs);
+        assert_eq!(other.total_secs, 0);
+        assert!(other.sites.is_empty());
+        assert!(!all.sites.is_empty());
+        assert!(
+            all.sites
+                .iter()
+                .any(|s| s.name == "github" && s.category == "Development")
+        );
     }
 }
