@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -22,8 +23,10 @@ import com.shanetalkstech.timesink.DeviceZone
 import java.io.File
 import java.time.LocalDate
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.timesink_ffi.CustomSpan
+import uniffi.timesink_ffi.AppSecs
 import uniffi.timesink_ffi.Database
 import uniffi.timesink_ffi.DaySummary
 import uniffi.timesink_ffi.PeriodSummary
@@ -85,11 +88,25 @@ fun AppRoot(refreshKey: Int) {
     var promptTo by remember { mutableStateOf("") }
     var promptError by remember { mutableStateOf<String?>(null) }
 
+    // The device filter: every device in the database, and the chosen one
+    // (`null` = all devices together).
+    var devices by remember { mutableStateOf<List<String>>(emptyList()) }
+    var device by remember { mutableStateOf<String?>(null) }
+
+    // The app editor: the app being edited (`null` = closed), the categories to
+    // offer, the message about the last save, and a counter bumped after a save
+    // so the numbers reload with the new names.
+    var editing by remember { mutableStateOf<AppSecs?>(null) }
+    var editCategories by remember { mutableStateOf<List<String>>(emptyList()) }
+    var editError by remember { mutableStateOf<String?>(null) }
+    var edits by remember { mutableStateOf(0) }
+    val scope = rememberCoroutineScope()
+
     // The database is opened once and kept for the life of this screen.
     var database by remember { mutableStateOf<Database?>(null) }
 
     // Runs when the screen first appears and again whenever `refreshKey` changes.
-    LaunchedEffect(refreshKey, period, offset, custom) {
+    LaunchedEffect(refreshKey, period, offset, custom, device, edits) {
         try {
             // Disk work must not happen on the thread that draws the screen, so
             // it runs on the IO thread pool and this coroutine waits for it.
@@ -98,10 +115,13 @@ fun AppRoot(refreshKey: Int) {
             val loadedFor = period
             val loadedOffset = offset
             val loadedCustom = custom
+            val loadedDevice = device
             val data = withContext(Dispatchers.IO) {
                 val db = database ?: Database.open(
                     File(context.filesDir, "timesink.db").path,
                     DEVICE_ID,
+                    // The phone's own app names and categories are saved here.
+                    File(context.filesDir, "apps.conf").path,
                 )
                 val zone = DeviceZone()
                 val now = System.currentTimeMillis() / 1000L
@@ -111,21 +131,24 @@ fun AppRoot(refreshKey: Int) {
                     db.fillDemoData(now, DEMO_DAYS, DEMO_SEED, zone)
                 }
                 // The banner always shows the real today.
-                val realToday = db.daySummary(0L, now, zone)
+                val realToday = db.daySummary(0L, loadedDevice, now, zone)
                 // The Today tab may show an earlier day; every other tab shows a period.
                 val day = if (loadedFor == Period.TODAY && loadedOffset != 0L) {
-                    db.daySummary(loadedOffset, now, zone)
+                    db.daySummary(loadedOffset, loadedDevice, now, zone)
                 } else {
                     realToday
                 }
                 val range = if (loadedFor == Period.TODAY) {
                     null
                 } else {
-                    db.periodSummary(loadedFor.toBridge(), loadedOffset, loadedCustom, now, zone)
+                    db.periodSummary(loadedFor.toBridge(), loadedOffset, loadedCustom, loadedDevice, now, zone)
                 }
-                Loaded(db, realToday, day, range)
+                Loaded(db, realToday, day, range, db.devices())
             }
             database = data.db
+            devices = data.devices
+            // A device that disappeared goes back to the combined view.
+            if (loadedDevice != null && loadedDevice !in data.devices) device = null
             summary = data.today
             shownDay = data.day
             shownRange = data.range
@@ -141,6 +164,12 @@ fun AppRoot(refreshKey: Int) {
     CompositionLocalProvider(
         LocalTimesinkColors provides colors,
         LocalThemeName provides palette.name,
+        // Tapping an application row opens the editor for it.
+        LocalAppTapped provides { app: AppSecs ->
+            editCategories = database?.categories() ?: emptyList()
+            editError = null
+            editing = app
+        },
     ) {
         Column(
             modifier = Modifier
@@ -172,9 +201,44 @@ fun AppRoot(refreshKey: Int) {
                     }
                 },
             )
+            DeviceChips(devices, device, onSelect = {
+                device = it
+                offset = 0L
+            })
             Spacer(Modifier.height(8.dp))
 
             error?.let { MonoText(text = it, color = colors.danger) }
+
+            // The app editor replaces the screen's content while it is open.
+            editing?.let { app ->
+                AppEditor(
+                    app = app,
+                    categories = editCategories,
+                    error = editError,
+                    onSave = { name, category ->
+                        val db = database
+                        if (db != null) {
+                            scope.launch {
+                                try {
+                                    // Saving writes a file, so it runs off the drawing thread.
+                                    withContext(Dispatchers.IO) { db.setApp(app.raws, name, category) }
+                                    editing = null
+                                    editError = null
+                                    // Reload so every screen shows the new names.
+                                    edits += 1
+                                } catch (e: Exception) {
+                                    editError = e.explain()
+                                }
+                            }
+                        }
+                    },
+                    onCancel = {
+                        editing = null
+                        editError = null
+                    },
+                )
+                Spacer(Modifier.height(8.dp))
+            }
 
             // The date prompt replaces the screen's content while it is open.
             if (promptOpen && period == Period.CUSTOM) {
@@ -263,4 +327,6 @@ private class Loaded(
     val day: DaySummary,
     /** The numbers for any other tab, or `null` on the Today tab. */
     val range: PeriodSummary?,
+    /** Every device that has data. */
+    val devices: List<String>,
 )

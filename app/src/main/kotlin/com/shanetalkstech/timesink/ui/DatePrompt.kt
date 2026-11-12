@@ -52,9 +52,9 @@ fun DatePrompt(
             size = 12.sp,
         )
         Spacer(Modifier.height(10.dp))
-        DateField(label = "from", value = from, onChange = onFromChange)
+        LabeledField(label = "from", value = from, onChange = onFromChange)
         Spacer(Modifier.height(6.dp))
-        DateField(label = "to  ", value = to, onChange = onToChange)
+        LabeledField(label = "to  ", value = to, onChange = onToChange)
         if (error != null) {
             Spacer(Modifier.height(8.dp))
             MonoText(text = error, color = colors.danger, size = 12.sp)
@@ -68,13 +68,19 @@ fun DatePrompt(
 }
 
 /**
- * One labelled text box of the [DatePrompt]: `from [ 2026-10-01 ]`.
+ * One labelled text box: `from [ 2026-10-01 ]`. Used by the date prompt and the
+ * app editor.
  *
  * `BasicTextField` is Compose's plainest text input (no Material look), so it can
  * be styled like the rest of the app: monospace text in a thin box.
+ *
+ * @param label the word before the box.
+ * @param value the text in the box.
+ * @param onChange called with the new text on every keystroke.
+ * @param boxWidthDp how wide the box is.
  */
 @Composable
-private fun DateField(label: String, value: String, onChange: (String) -> Unit) {
+fun LabeledField(label: String, value: String, onChange: (String) -> Unit, boxWidthDp: Int = 150) {
     val colors = LocalTimesinkColors.current
     Row {
         MonoText(text = label, color = colors.muted, size = 14.sp)
@@ -96,7 +102,7 @@ private fun DateField(label: String, value: String, onChange: (String) -> Unit) 
             modifier = Modifier
                 .border(width = 1.dp, color = colors.border)
                 .padding(horizontal = 8.dp, vertical = 6.dp)
-                .width(150.dp),
+                .width(boxWidthDp.dp),
         )
     }
 }

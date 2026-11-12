@@ -2,9 +2,19 @@ package com.shanetalkstech.timesink.ui
 
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.Modifier
 import uniffi.timesink_ffi.AppSecs
 import uniffi.timesink_ffi.NameSecs
+import uniffi.timesink_ffi.SiteSecs
+
+/**
+ * What to do when an application row is tapped. The app's root provides it (it
+ * opens the editor); a screen drawn without one simply ignores taps. A
+ * CompositionLocal lets every screen's panel reach it without passing it down
+ * through each layout.
+ */
+val LocalAppTapped = compositionLocalOf<(AppSecs) -> Unit> { {} }
 
 /**
  * The "Categories" panel: one bar per category, biggest first, with the period's
@@ -39,6 +49,8 @@ fun CategoriesPanel(
 /**
  * The "Applications" panel: one bar per app, coloured by the app's category.
  *
+ * Tapping a row opens the editor (see [LocalAppTapped]).
+ *
  * @param apps the rows, already sorted biggest first.
  * @param nameChars how many characters of a name fit (more on a wide screen).
  */
@@ -50,8 +62,13 @@ fun ApplicationsPanel(apps: List<AppSecs>, nameChars: Int = NAME_COLUMN_CHARS) {
             MonoText(text = "nothing recorded yet", color = colors.muted)
         }
         val max = apps.maxOfOrNull { it.secs } ?: 1L
+        val onTap = LocalAppTapped.current
         for (row in apps) {
-            BarRow(row.name, row.secs, max, categoryColorFor(row.colorIndex), nameChars)
+            BarRow(
+                row.name, row.secs, max, categoryColorFor(row.colorIndex), nameChars,
+                // Tapping a row opens the editor for its name and category.
+                onClick = { onTap(row) },
+            )
         }
     }
 }
@@ -82,6 +99,25 @@ fun ListeningPanel(
         for (row in players) {
             // Players have no category colour, so they use the banner-end colour.
             BarRow(row.name, row.secs, max, colors.bannerEnd, nameChars)
+        }
+    }
+}
+
+/**
+ * The "Sites" panel: time on websites, coloured by site category. It draws nothing
+ * at all when no website time exists (the phone has none of its own; it appears
+ * once the desktop's browser extension data has been synced).
+ *
+ * @param sites the rows, already sorted biggest first.
+ * @param nameChars how many characters of a name fit (more on a wide screen).
+ */
+@Composable
+fun SitesPanel(sites: List<SiteSecs>, nameChars: Int = NAME_COLUMN_CHARS) {
+    if (sites.isEmpty()) return
+    TuiPanel(title = " Sites ", modifier = Modifier.fillMaxWidth()) {
+        val max = sites.maxOfOrNull { it.secs } ?: 1L
+        for (row in sites) {
+            BarRow(row.name, row.secs, max, categoryColorFor(row.colorIndex), nameChars)
         }
     }
 }

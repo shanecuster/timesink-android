@@ -2,6 +2,7 @@ package com.shanetalkstech.timesink.ui
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -35,6 +36,7 @@ private const val DAY_SECS = 86_400f
  * @param color the bar colour, usually the category's colour.
  * @param nameChars how many characters the name column holds. Wide screens pass
  *   a larger number so fewer names are cut.
+ * @param onClick called when the row is tapped, or `null` for a row that is not tappable.
  */
 @Composable
 fun BarRow(
@@ -43,13 +45,18 @@ fun BarRow(
     max: Long,
     color: Color,
     nameChars: Int = NAME_COLUMN_CHARS,
+    onClick: (() -> Unit)? = null,
 ) {
     val colors = LocalTimesinkColors.current
     // The share of the bar to fill, from 0.0 to 1.0. `coerceIn` keeps it valid
     // even if the numbers are odd, and a tiny share still shows a sliver.
     val share = if (max > 0) (secs.toFloat() / max).coerceIn(0f, 1f) else 0f
     Row(
-        modifier = Modifier.fillMaxWidth().height(22.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(22.dp)
+            // Rows that can be edited (apps) are tappable; the others are not.
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // The name column has a fixed width so all the bars start at the same x.

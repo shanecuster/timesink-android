@@ -54,6 +54,8 @@ fun RangeScreen(summary: PeriodSummary, today: Long) {
                     CategoriesPanel(summary.totalSecs, summary.categories, WIDE_NAME_COLUMN_CHARS)
                     Spacer(Modifier.height(8.dp))
                     ApplicationsPanel(summary.apps, WIDE_NAME_COLUMN_CHARS)
+                    if (summary.sites.isNotEmpty()) Spacer(Modifier.height(8.dp))
+                    SitesPanel(summary.sites, WIDE_NAME_COLUMN_CHARS)
                 }
             }
         } else {
@@ -63,6 +65,8 @@ fun RangeScreen(summary: PeriodSummary, today: Long) {
                 CategoriesPanel(summary.totalSecs, summary.categories)
                 Spacer(Modifier.height(8.dp))
                 ApplicationsPanel(summary.apps)
+                if (summary.sites.isNotEmpty()) Spacer(Modifier.height(8.dp))
+                SitesPanel(summary.sites)
                 Spacer(Modifier.height(8.dp))
                 ListeningPanel(summary.listeningSecs, summary.listening)
             }

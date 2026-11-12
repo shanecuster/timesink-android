@@ -36,6 +36,8 @@ fun TodayScreen(summary: DaySummary) {
                     CategoriesPanel(summary.totalSecs, summary.categories, WIDE_NAME_COLUMN_CHARS)
                     Spacer(Modifier.height(8.dp))
                     ApplicationsPanel(summary.apps, WIDE_NAME_COLUMN_CHARS)
+                    if (summary.sites.isNotEmpty()) Spacer(Modifier.height(8.dp))
+                    SitesPanel(summary.sites, WIDE_NAME_COLUMN_CHARS)
                 }
                 Column(modifier = Modifier.weight(0.5f).padding(start = 6.dp)) {
                     TimelinePanel(summary)
@@ -48,6 +50,8 @@ fun TodayScreen(summary: DaySummary) {
                 CategoriesPanel(summary.totalSecs, summary.categories)
                 Spacer(Modifier.height(8.dp))
                 ApplicationsPanel(summary.apps)
+                if (summary.sites.isNotEmpty()) Spacer(Modifier.height(8.dp))
+                SitesPanel(summary.sites)
                 Spacer(Modifier.height(8.dp))
                 TimelinePanel(summary)
                 Spacer(Modifier.height(8.dp))

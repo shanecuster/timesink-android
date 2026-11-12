@@ -7,7 +7,9 @@ time. The look imitates the terminal app.
 
 **Status:** just started. The Today screen and every period tab work (7 days,
 30 days, year, all time, calendar week, quarter and custom dates, with stepping
-back and forward); sync and phone usage come next. Debug builds fill an empty
+back and forward), a device filter once more than one device has data, a Sites
+panel when website time exists, and tap-to-edit names and categories for
+applications; sync and phone usage come next. Debug builds fill an empty
 database with made-up demo data so the screens can be tried and photographed;
 release builds start empty.
 
