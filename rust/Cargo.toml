@@ -31,14 +31,14 @@ resolver = "3"
 # app. To move to a newer core, change this hash on purpose, then rebuild and
 # test, and commit that change by itself.
 #
-# This commit is the one that split the shared code out of the terminal app
-# (periods, views and day totals now live in timesink-core).
-timesink-core = { git = "https://github.com/shanecuster/timesink", rev = "ba96a6bfe9c0acf2d29e6ea4790a1b41234a581c" }
+# This commit shares app and site names and categories between computers
+# (the `conf:<device>` sync documents), on top of the core split.
+timesink-core = { git = "https://github.com/shanecuster/timesink", rev = "1709a33b6201a1c00c94c7a7a6dd4d04e136e258" }
 
 # CouchDB sync, from the same repository and the same pinned commit as the core
 # (the terminal app uses this exact code, so both sides always speak the same
 # protocol).
-timesink-sync = { git = "https://github.com/shanecuster/timesink", rev = "ba96a6bfe9c0acf2d29e6ea4790a1b41234a581c" }
+timesink-sync = { git = "https://github.com/shanecuster/timesink", rev = "1709a33b6201a1c00c94c7a7a6dd4d04e136e258" }
 
 # `anyhow` is the catch-all error type timesink-core returns from its functions.
 # This crate needs to name that type to convert it into the error Kotlin sees.

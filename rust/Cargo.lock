@@ -933,7 +933,7 @@ dependencies = [
 [[package]]
 name = "timesink-core"
 version = "0.1.0"
-source = "git+https://github.com/shanecuster/timesink?rev=ba96a6bfe9c0acf2d29e6ea4790a1b41234a581c#ba96a6bfe9c0acf2d29e6ea4790a1b41234a581c"
+source = "git+https://github.com/shanecuster/timesink?rev=1709a33b6201a1c00c94c7a7a6dd4d04e136e258#1709a33b6201a1c00c94c7a7a6dd4d04e136e258"
 dependencies = [
  "anyhow",
  "chrono",
@@ -954,7 +954,7 @@ dependencies = [
 [[package]]
 name = "timesink-sync"
 version = "0.1.0"
-source = "git+https://github.com/shanecuster/timesink?rev=ba96a6bfe9c0acf2d29e6ea4790a1b41234a581c#ba96a6bfe9c0acf2d29e6ea4790a1b41234a581c"
+source = "git+https://github.com/shanecuster/timesink?rev=1709a33b6201a1c00c94c7a7a6dd4d04e136e258#1709a33b6201a1c00c94c7a7a6dd4d04e136e258"
 dependencies = [
  "anyhow",
  "base64",
