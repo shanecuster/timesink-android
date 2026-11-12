@@ -48,7 +48,7 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard};
 
 use timesink_core::appmap::{self, AppMap};
 use timesink_core::data::{Snapshot, View};
-use timesink_core::db::Db;
+use timesink_core::db::{Db, MERGE_GAP_SECS};
 use timesink_core::domains::DomainConfig;
 use timesink_core::model::WindowSnapshot;
 use timesink_core::period::{self, Range};
@@ -455,6 +455,51 @@ pub struct SyncStatus {
     pub pending_days: u32,
 }
 
+/// What happened to the foreground app, as Android's usage log reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum UsageKind {
+    /// An app came to the front (Android's "activity resumed").
+    Resumed,
+    /// An app left the front (Android's "activity paused").
+    Paused,
+    /// The screen went off or was locked: whatever was in front stopped.
+    ScreenOff,
+    /// Something that is not an app took the front (the home screen, the
+    /// system bar): whatever was in front stopped, and nothing is counted.
+    Nothing,
+}
+
+/// One entry of Android's usage log.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct UsageEvent {
+    /// When it happened, in milliseconds since 1970.
+    pub ts_ms: i64,
+    /// The app's package name, such as `com.android.chrome` (unused for
+    /// `ScreenOff` and `Nothing`).
+    pub package: String,
+    /// What happened.
+    pub kind: UsageKind,
+}
+
+/// An app's own name as Android shows it, such as `Google Maps`.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct AppLabel {
+    /// The package name.
+    pub package: String,
+    /// The label the user sees under the app's icon.
+    pub label: String,
+}
+
+/// What importing the usage log did.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct UsageImport {
+    /// Stretches of app use that were recorded (new rows or longer rows).
+    pub recorded: u32,
+    /// The app still in front at the end of the import, if any. Kotlin hands
+    /// it back with the next import so the stretch carries on unbroken.
+    pub open_package: Option<String>,
+}
+
 /// The built-in application names and categories used until the phone has its
 /// own editable list. It is the same shape as the terminal app's `apps.conf`:
 /// raw class, display name, category.
@@ -471,6 +516,15 @@ org.gnome.Nautilus       nautilus       Files
 jetbrains-studio         android-studio Development
 bitwarden                bitwarden      Passwords
 com.gabm.satty           satty          Utilities
+com.android.chrome       chrome         Browser
+org.mozilla.firefox      firefox        Browser
+com.google.android.gm    gmail          Email
+com.google.android.apps.messaging messages Chat
+com.discord              discord        Chat
+com.spotify.music        spotify        Music
+com.google.android.youtube youtube      Video
+com.google.android.apps.maps maps       Utilities
+com.android.settings     settings       Utilities
 ";
 
 /// Built-in site names and categories (the `domains.conf` format: site, display
@@ -643,6 +697,64 @@ impl Database {
             last_ok: parse("last_ok")?,
             last_failed: parse("last_failed")?,
             pending_days: db.dirty_count()? as u32,
+        })
+    }
+
+    /// Records stretches of app use from Android's usage log.
+    ///
+    /// `events` are the log entries since the last import (plus, if an app was
+    /// still in front then, a `Resumed` for it at the start). They are turned
+    /// into focus stretches here, in Rust, so the rules are tested. A stretch
+    /// still going at `end_ms` is cut there and its app is returned as
+    /// `open_package`. Stretches join the previous row when they carry on
+    /// from it. `labels` give the apps' own names; an app with no name of its
+    /// own yet gets its label, in the category "Other", until the user edits it.
+    pub fn record_usage(
+        &self,
+        events: Vec<UsageEvent>,
+        labels: Vec<AppLabel>,
+        end_ms: i64,
+    ) -> Result<UsageImport, FfiError> {
+        let (stretches, open_package) = usage_stretches(events, end_ms);
+        let mut recorded = 0u32;
+        {
+            let db = self.lock()?;
+            for (package, start, end) in &stretches {
+                let snapshot = WindowSnapshot {
+                    app_class: package.clone(),
+                    title: String::new(),
+                    workspace: "phone".to_string(),
+                };
+                match db.find_mergeable(*start, &snapshot, MERGE_GAP_SECS)? {
+                    // Carries on from the last row: just make that one longer.
+                    Some(id) => db.set_end(id, *end)?,
+                    None => {
+                        let id = db.insert_open(*start, &snapshot)?;
+                        db.finish(id, *end)?;
+                    }
+                }
+                recorded += 1;
+            }
+        }
+        // Give apps their own names, without touching ones already named.
+        let mut named_any = false;
+        for l in &labels {
+            let known = self.map()?.lookup(&l.package).mapped;
+            if !known
+                && appmap::append_entry(&self.conf_path, &l.package, &l.label, "Other").is_ok()
+            {
+                named_any = true;
+            }
+        }
+        if named_any {
+            let fresh = build_map(&self.conf_path);
+            if let Ok(mut map) = self.map.write() {
+                *map = fresh;
+            }
+        }
+        Ok(UsageImport {
+            recorded,
+            open_package,
         })
     }
 
@@ -934,6 +1046,67 @@ impl Database {
             })
             .collect()
     }
+}
+
+/// Turns Android's usage log entries into stretches of app use:
+/// `(package, start_secs, end_secs)`, oldest first, never overlapping.
+///
+/// An app coming to the front ends whatever was in front before it; the screen
+/// going off, or something that is not an app, ends it too. A stretch still
+/// open at `end_ms` is cut there and its package is returned so the next
+/// import can carry on from it. Two stretches of the same app with at most
+/// `MERGE_GAP_SECS` between them are joined (moving between an app's own
+/// screens leaves tiny gaps).
+fn usage_stretches(
+    mut events: Vec<UsageEvent>,
+    end_ms: i64,
+) -> (Vec<(String, i64, i64)>, Option<String>) {
+    // Android lists events in time order already; sorting is cheap insurance.
+    events.sort_by_key(|e| e.ts_ms);
+    let mut out: Vec<(String, i64, i64)> = Vec::new();
+    // The app in front now and when it came to the front (milliseconds).
+    let mut open: Option<(String, i64)> = None;
+
+    // Closes the open stretch at `at_ms`, joining it to the one before if it
+    // is the same app and nearly touching.
+    fn close(open: &mut Option<(String, i64)>, at_ms: i64, out: &mut Vec<(String, i64, i64)>) {
+        if let Some((package, start_ms)) = open.take() {
+            let (start, end) = (start_ms.div_euclid(1000), at_ms.div_euclid(1000));
+            if end <= start {
+                return;
+            }
+            match out.last_mut() {
+                Some(last) if last.0 == package && start - last.2 <= MERGE_GAP_SECS => {
+                    last.2 = last.2.max(end);
+                }
+                _ => out.push((package, start, end)),
+            }
+        }
+    }
+
+    for e in events {
+        match e.kind {
+            UsageKind::Resumed => {
+                // The same app resuming again changes nothing.
+                if open.as_ref().is_some_and(|(p, _)| *p == e.package) {
+                    continue;
+                }
+                close(&mut open, e.ts_ms, &mut out);
+                open = Some((e.package, e.ts_ms));
+            }
+            UsageKind::Paused => {
+                // Only the app in front can leave the front.
+                if open.as_ref().is_some_and(|(p, _)| *p == e.package) {
+                    close(&mut open, e.ts_ms, &mut out);
+                }
+            }
+            UsageKind::ScreenOff | UsageKind::Nothing => close(&mut open, e.ts_ms, &mut out),
+        }
+    }
+    // Cut whatever is still going at the end, and remember the app.
+    let still = open.as_ref().map(|(p, _)| p.clone());
+    close(&mut open, end_ms, &mut out);
+    (out, still)
 }
 
 /// The app list: the built-in apps, then the user's own `apps.conf` after them
@@ -1362,5 +1535,118 @@ mod tests {
         let db = memory_database();
         let st = db.sync_status().unwrap();
         assert_eq!((st.last_ok, st.last_failed), (None, None));
+    }
+
+    /// Builds a usage event the short way, for the tests below.
+    fn ev(ts_s: i64, package: &str, kind: UsageKind) -> UsageEvent {
+        UsageEvent {
+            ts_ms: ts_s * 1000,
+            package: package.to_string(),
+            kind,
+        }
+    }
+
+    /// Apps switching, screen off, and a stretch still open at the end.
+    #[test]
+    fn usage_events_become_stretches() {
+        let events = vec![
+            ev(100, "a", UsageKind::Resumed),
+            // Switching to b ends a, even with no Paused for a.
+            ev(160, "b", UsageKind::Resumed),
+            ev(200, "b", UsageKind::Paused),
+            ev(300, "c", UsageKind::Resumed),
+            ev(330, "c", UsageKind::ScreenOff),
+            ev(400, "d", UsageKind::Resumed),
+        ];
+        let (s, open) = usage_stretches(events, 450_000);
+        assert_eq!(
+            s,
+            vec![
+                ("a".to_string(), 100, 160),
+                ("b".to_string(), 160, 200),
+                ("c".to_string(), 300, 330),
+                ("d".to_string(), 400, 450),
+            ]
+        );
+        assert_eq!(open.as_deref(), Some("d"));
+    }
+
+    /// The home screen ends an app's stretch and counts for nothing; a stray
+    /// Paused for an app that is not in front changes nothing.
+    #[test]
+    fn home_screen_and_stray_pauses() {
+        let events = vec![
+            ev(10, "a", UsageKind::Resumed),
+            ev(20, "zzz", UsageKind::Paused),
+            ev(40, "", UsageKind::Nothing),
+            ev(90, "a", UsageKind::Resumed),
+            ev(100, "a", UsageKind::Paused),
+        ];
+        let (s, open) = usage_stretches(events, 200_000);
+        assert_eq!(
+            s,
+            vec![("a".to_string(), 10, 40), ("a".to_string(), 90, 100)]
+        );
+        assert_eq!(open, None);
+    }
+
+    /// Moving between one app's own screens leaves a tiny gap that is joined.
+    #[test]
+    fn tiny_gaps_inside_an_app_are_joined() {
+        let events = vec![
+            ev(10, "a", UsageKind::Resumed),
+            ev(50, "a", UsageKind::Paused),
+            ev(51, "a", UsageKind::Resumed),
+            ev(80, "a", UsageKind::Paused),
+        ];
+        let (s, _) = usage_stretches(events, 100_000);
+        assert_eq!(s, vec![("a".to_string(), 10, 80)]);
+    }
+
+    /// Recording writes rows, names new apps, and a second import carrying on
+    /// from the open app extends the same row instead of adding another.
+    #[test]
+    fn recording_usage_names_apps_and_carries_on() {
+        let conf = temp_conf();
+        let db = Database::from_db(
+            Db::open_in_memory("phone").unwrap(),
+            conf.clone(),
+            PathBuf::new(),
+            "phone".to_string(),
+        );
+        let label = AppLabel {
+            package: "com.example.maps".into(),
+            label: "Example Maps".into(),
+        };
+        let first = db
+            .record_usage(
+                vec![ev(1_000, "com.example.maps", UsageKind::Resumed)],
+                vec![label.clone()],
+                1_060_000,
+            )
+            .unwrap();
+        assert_eq!(first.recorded, 1);
+        assert_eq!(first.open_package.as_deref(), Some("com.example.maps"));
+        // The next import starts with the carried-over app.
+        let second = db
+            .record_usage(
+                vec![
+                    ev(1_060, "com.example.maps", UsageKind::Resumed),
+                    ev(1_120, "com.example.maps", UsageKind::Paused),
+                ],
+                vec![label],
+                1_200_000,
+            )
+            .unwrap();
+        assert_eq!(second.open_package, None);
+        let day = db
+            .period_summary(Period::All, 0, None, None, 1_300, Arc::new(Utc))
+            .unwrap();
+        // One 120 second stretch, named by its own label, not two rows.
+        assert_eq!(day.apps.len(), 1);
+        assert_eq!(day.apps[0].name, "Example-Maps");
+        assert_eq!(day.apps[0].secs, 120);
+        assert_eq!(day.apps[0].category, "Other");
+        let _ = std::fs::remove_file(conf);
     }
 }
