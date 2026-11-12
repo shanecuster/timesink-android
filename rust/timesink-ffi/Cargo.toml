@@ -24,6 +24,8 @@ crate-type = ["cdylib", "lib"]
 [dependencies]
 # The shared engine (pinned to one exact commit in ../Cargo.toml).
 timesink-core.workspace = true
+# Syncing with CouchDB (see ../Cargo.toml).
+timesink-sync.workspace = true
 uniffi.workspace = true
 # The error type timesink-core returns; see the comment in ../Cargo.toml.
 anyhow.workspace = true

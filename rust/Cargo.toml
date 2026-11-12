@@ -35,6 +35,11 @@ resolver = "3"
 # (periods, views and day totals now live in timesink-core).
 timesink-core = { git = "https://github.com/shanecuster/timesink", rev = "ba96a6bfe9c0acf2d29e6ea4790a1b41234a581c" }
 
+# CouchDB sync, from the same repository and the same pinned commit as the core
+# (the terminal app uses this exact code, so both sides always speak the same
+# protocol).
+timesink-sync = { git = "https://github.com/shanecuster/timesink", rev = "ba96a6bfe9c0acf2d29e6ea4790a1b41234a581c" }
+
 # `anyhow` is the catch-all error type timesink-core returns from its functions.
 # This crate needs to name that type to convert it into the error Kotlin sees.
 # The same major version as timesink-core uses, so Cargo links one copy.

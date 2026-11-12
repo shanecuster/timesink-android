@@ -54,6 +54,7 @@ use timesink_core::model::WindowSnapshot;
 use timesink_core::period::{self, Range};
 use timesink_core::theme::{self, Rgb, Theme};
 use timesink_core::{demo, stats};
+use timesink_sync::{self as sync, HttpRemote, SyncConfig};
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -417,6 +418,43 @@ pub struct PeriodSummary {
     pub sites: Vec<SiteSecs>,
 }
 
+/// Where the CouchDB server is and how to log in, typed on the sync screen.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SyncServer {
+    /// Server address, such as `http://myserver:5984`.
+    pub url: String,
+    /// Database name on the server.
+    pub database: String,
+    /// CouchDB user.
+    pub user: String,
+    /// CouchDB password.
+    pub password: String,
+}
+
+/// What one sync did.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SyncOutcome {
+    /// Days of this phone's data sent to the server.
+    pub uploaded: u32,
+    /// Days removed from the server.
+    pub removed: u32,
+    /// Days of other devices' data brought in.
+    pub downloaded: u32,
+    /// Things worth a look that did not stop the sync.
+    pub warnings: Vec<String>,
+}
+
+/// How syncing has been going, for the sync screen.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SyncStatus {
+    /// When the last successful sync finished (Unix seconds), if ever.
+    pub last_ok: Option<i64>,
+    /// When the last failed attempt happened, if the latest attempt failed.
+    pub last_failed: Option<i64>,
+    /// Days of this phone's data not yet sent.
+    pub pending_days: u32,
+}
+
 /// The built-in application names and categories used until the phone has its
 /// own editable list. It is the same shape as the terminal app's `apps.conf`:
 /// raw class, display name, category.
@@ -468,17 +506,23 @@ pub struct Database {
     conf_path: PathBuf,
     /// Site names and categories for the Sites panel.
     sites: DomainConfig,
+    /// The database file, so a sync can use a connection of its own.
+    path: PathBuf,
+    /// This phone's name in the data (the device name typed in the app).
+    device_id: String,
 }
 
 /// Helpers used only inside this crate (not exported to Kotlin).
 impl Database {
     /// Wraps an open core database together with the built-in app list.
-    fn from_db(db: Db, conf_path: PathBuf) -> Database {
+    fn from_db(db: Db, conf_path: PathBuf, path: PathBuf, device_id: String) -> Database {
         Database {
             db: Mutex::new(db),
             map: RwLock::new(build_map(&conf_path)),
             conf_path,
             sites: DomainConfig::from_conf(DEFAULT_SITES),
+            path,
+            device_id,
         }
     }
 
@@ -536,7 +580,70 @@ impl Database {
         Ok(Arc::new(Database::from_db(
             db,
             PathBuf::from(apps_conf_path),
+            PathBuf::from(path),
+            device_id,
         )))
+    }
+
+    /// Syncs with the CouchDB server: sends this phone's changed days and brings
+    /// in the other devices' days (never window titles; the phone has none).
+    ///
+    /// A sync can take seconds on a slow network, so it uses its own connection
+    /// to the database file instead of the shared one; the dashboard keeps
+    /// loading while it runs. The outcome is remembered (see `sync_status`).
+    /// Kotlin must call this off the main thread.
+    pub fn sync_now(&self, server: SyncServer) -> Result<SyncOutcome, FfiError> {
+        let url = server.url.trim().trim_end_matches('/').to_string();
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return Err(FfiError::Failed {
+                detail: "the server address must start with http:// or https://".to_string(),
+            });
+        }
+        let config = SyncConfig {
+            url,
+            database: server.database.trim().to_string(),
+            user: server.user.trim().to_string(),
+            password: server.password,
+        };
+        if config.database.is_empty() || config.user.is_empty() || config.password.is_empty() {
+            return Err(FfiError::Failed {
+                detail: "fill in the database, user and password first".to_string(),
+            });
+        }
+        let db = Db::open(&self.path, &self.device_id)?;
+        let mut remote = HttpRemote::new(config);
+        let outcome = sync::run(&db, &mut remote);
+        // Remember how it went; failing to write the note is not worth failing over.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let _ = match &outcome {
+            Ok(_) => db
+                .set_sync_state("last_ok", &now.to_string())
+                .and_then(|_| db.set_sync_state("last_failed", "")),
+            Err(_) => db.set_sync_state("last_failed", &now.to_string()),
+        };
+        let report = outcome?;
+        Ok(SyncOutcome {
+            uploaded: report.uploaded as u32,
+            removed: report.removed as u32,
+            downloaded: report.downloaded as u32,
+            warnings: report.warnings,
+        })
+    }
+
+    /// When syncing last worked or failed, and how much is waiting to be sent.
+    pub fn sync_status(&self) -> Result<SyncStatus, FfiError> {
+        let db = self.lock()?;
+        let parse = |key: &str| -> Result<Option<i64>, FfiError> {
+            Ok(db.sync_state(key)?.and_then(|v| v.parse::<i64>().ok()))
+        };
+        Ok(SyncStatus {
+            last_ok: parse("last_ok")?,
+            last_failed: parse("last_failed")?,
+            pending_days: db.dirty_count()? as u32,
+        })
     }
 
     /// The devices that have data in the database (this phone, and any synced
@@ -967,7 +1074,12 @@ mod tests {
 
     /// A fresh in-memory database, wrapped the way Kotlin would hold it.
     fn memory_database() -> Database {
-        Database::from_db(Db::open_in_memory("phone").unwrap(), temp_conf())
+        Database::from_db(
+            Db::open_in_memory("phone").unwrap(),
+            temp_conf(),
+            PathBuf::new(),
+            "phone".to_string(),
+        )
     }
 
     /// A new database is empty, and demo data makes it not empty.
@@ -1133,7 +1245,12 @@ mod tests {
     #[test]
     fn set_app_renames_and_is_remembered() {
         let conf = temp_conf();
-        let db = Database::from_db(Db::open_in_memory("phone").unwrap(), conf.clone());
+        let db = Database::from_db(
+            Db::open_in_memory("phone").unwrap(),
+            conf.clone(),
+            PathBuf::new(),
+            "phone".to_string(),
+        );
         db.fill_demo_data(NOW, 3, 1, Arc::new(Utc)).unwrap();
         let before = db.day_summary(0, None, NOW, Arc::new(Utc)).unwrap();
         let app = before
@@ -1153,7 +1270,12 @@ mod tests {
         );
         assert!(db.categories().unwrap().contains(&"Work".to_string()));
         // A new database object reads the saved file.
-        let again = Database::from_db(Db::open_in_memory("phone").unwrap(), conf.clone());
+        let again = Database::from_db(
+            Db::open_in_memory("phone").unwrap(),
+            conf.clone(),
+            PathBuf::new(),
+            "phone".to_string(),
+        );
         assert!(again.categories().unwrap().contains(&"Work".to_string()));
         let _ = std::fs::remove_file(conf);
     }
@@ -1162,7 +1284,12 @@ mod tests {
     #[test]
     fn set_app_refuses_empty_names() {
         let conf = temp_conf();
-        let db = Database::from_db(Db::open_in_memory("phone").unwrap(), conf.clone());
+        let db = Database::from_db(
+            Db::open_in_memory("phone").unwrap(),
+            conf.clone(),
+            PathBuf::new(),
+            "phone".to_string(),
+        );
         assert!(
             db.set_app(vec!["a.b".into()], " ".into(), "X".into())
                 .is_err()
@@ -1212,5 +1339,28 @@ mod tests {
                 .iter()
                 .any(|s| s.name == "github" && s.category == "Development")
         );
+    }
+
+    /// A sync with an unusable address or empty fields is refused before any
+    /// network use, with a message that says what to fix.
+    #[test]
+    fn sync_checks_its_settings_first() {
+        let db = memory_database();
+        let server = |url: &str, pw: &str| SyncServer {
+            url: url.into(),
+            database: "timesink".into(),
+            user: "me".into(),
+            password: pw.into(),
+        };
+        assert!(db.sync_now(server("myserver:5984", "x")).is_err());
+        assert!(db.sync_now(server("http://myserver:5984", "")).is_err());
+    }
+
+    /// Before any sync: nothing succeeded and nothing failed.
+    #[test]
+    fn sync_status_starts_blank() {
+        let db = memory_database();
+        let st = db.sync_status().unwrap();
+        assert_eq!((st.last_ok, st.last_failed), (None, None));
     }
 }
