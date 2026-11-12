@@ -2,6 +2,12 @@ package com.shanetalkstech.timesink.ui
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -23,7 +29,7 @@ private const val OTHER = "Other"
 /**
  * The editor for one application's name and category, opened by tapping an app
  * row. It is the phone version of the terminal app's `a` flow: change the short
- * name, then pick a category from the list or type a new one.
+ * name, then pick a category from the wrapping chips or type a new one.
  *
  * Nothing recorded is changed; only the names shown. The change is saved to the
  * phone's own list and applies to all history.
@@ -34,6 +40,7 @@ private const val OTHER = "Other"
  * @param onSave called with the new name and category when "save" is tapped.
  * @param onCancel called when "cancel" is tapped.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AppEditor(
     app: AppSecs,
@@ -49,40 +56,47 @@ fun AppEditor(
     var typed by remember(app) { mutableStateOf("") }
 
     TuiPanel(title = " Edit application ", modifier = Modifier.fillMaxWidth()) {
-        MonoText(text = app.raws.joinToString(", "), color = colors.muted, size = 11.sp)
-        Spacer(Modifier.height(8.dp))
-        LabeledField(label = "name    ", value = name, onChange = { name = it })
-        Spacer(Modifier.height(8.dp))
-        MonoText(text = "category", color = colors.muted, size = 12.sp)
-        // The known categories, then "Other"; the chosen one is marked with an arrow.
-        for (option in (categories + OTHER).distinct()) {
-            val on = typed.isBlank() && option == chosen
-            MonoText(
-                text = (if (on) "› " else "  ") + option,
-                color = if (on) colors.accent else colors.text,
-                bold = on,
-                size = 14.sp,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable {
-                        chosen = option
-                        // Picking from the list drops any half-typed new category.
-                        typed = ""
-                    }
-                    .padding(vertical = 7.dp),
-            )
-        }
-        Spacer(Modifier.height(4.dp))
-        LabeledField(label = "new     ", value = typed, onChange = { typed = it })
-        if (error != null) {
+        // The editor sits above a screen that does not scroll for it, so it
+        // scrolls itself when it is taller than this, however many categories
+        // there come to be.
+        Column(modifier = Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
+            MonoText(text = app.raws.joinToString(", "), color = colors.muted, size = 11.sp)
             Spacer(Modifier.height(8.dp))
-            MonoText(text = error, color = colors.danger, size = 12.sp)
-        }
-        Spacer(Modifier.height(6.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            // A typed category wins over the list, like the terminal app's "new category".
-            ActionButton(label = "save", onClick = { onSave(name, typed.ifBlank { chosen }) })
-            ActionButton(label = "cancel", onClick = onCancel)
+            LabeledField(label = "name    ", value = name, onChange = { name = it })
+            Spacer(Modifier.height(8.dp))
+            MonoText(text = "category", color = colors.muted, size = 12.sp)
+            // The known categories, then "Other", as chips that wrap onto as many
+            // lines as needed; the chosen one is highlighted in brackets.
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                for (option in (categories + OTHER).distinct()) {
+                    val on = typed.isBlank() && option == chosen
+                    MonoText(
+                        text = if (on) "[$option]" else " $option ",
+                        color = if (on) colors.accent else colors.text,
+                        bold = on,
+                        size = 14.sp,
+                        modifier = Modifier
+                            .clickable {
+                                chosen = option
+                                // Picking from the list drops any half-typed new category.
+                                typed = ""
+                            }
+                            .padding(horizontal = 4.dp, vertical = 9.dp),
+                    )
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            LabeledField(label = "new     ", value = typed, onChange = { typed = it })
+            if (error != null) {
+                Spacer(Modifier.height(8.dp))
+                MonoText(text = error, color = colors.danger, size = 12.sp)
+            }
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // A typed category wins over the list, like the terminal app's "new category".
+                ActionButton(label = "save", onClick = { onSave(name, typed.ifBlank { chosen }) })
+                ActionButton(label = "cancel", onClick = onCancel)
+            }
         }
     }
 }
