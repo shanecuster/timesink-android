@@ -33,6 +33,12 @@ object UsageImporter {
     private const val KEYGUARD_SHOWN = 17
     private const val DEVICE_SHUTDOWN = 26
 
+    /**
+     * Only one import may run at a time. The app and the background job can both
+     * try; the second waits, then reads from the position the first saved.
+     */
+    private val lock = Any()
+
     /** How far back the very first import goes: about as far as Android keeps the log. */
     private const val FIRST_IMPORT_DAYS = 7L
 
@@ -61,7 +67,7 @@ object UsageImporter {
      *
      * @return how many stretches of app use were recorded.
      */
-    fun importNow(context: Context, db: Database, settings: AppSettings): Int {
+    fun importNow(context: Context, db: Database, settings: AppSettings): Int = synchronized(lock) {
         val manager = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
         val end = System.currentTimeMillis()
         val begin = settings.usageCursorMs.takeIf { it > 0 } ?: (end - FIRST_IMPORT_DAYS * 86_400_000L)
@@ -97,7 +103,7 @@ object UsageImporter {
         // Only move the position forward once the rows are safely stored.
         settings.usageCursorMs = end
         settings.usageOpenPackage = result.openPackage
-        return result.recorded.toInt()
+        result.recorded.toInt()
     }
 
     /** The name shown under the app's icon, or the end of its package name if Android won't say. */

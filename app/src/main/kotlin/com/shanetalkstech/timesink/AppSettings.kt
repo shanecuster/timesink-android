@@ -4,6 +4,23 @@ import android.content.Context
 import android.os.Build
 
 /**
+ * The battery rules the user can change on the settings screen.
+ *
+ * @property thresholdPercent tracking and sync pause at or below this charge
+ *   (unless the phone is charging).
+ * @property pauseOnBatterySaver also pause while Android's Battery Saver is on.
+ * @property backgroundUpdates let a short scheduled job update the data every few
+ *   hours. Off by default: the cheapest mode only updates when the app is opened.
+ * @property notifyOnResume send a quiet notice when tracking carries on again.
+ */
+data class BatteryOptions(
+    val thresholdPercent: Int,
+    val pauseOnBatterySaver: Boolean,
+    val backgroundUpdates: Boolean,
+    val notifyOnResume: Boolean,
+)
+
+/**
  * The app's saved settings: the master switch and the sync server details.
  *
  * They live in Android's private per-app storage (`SharedPreferences`), which
@@ -80,6 +97,33 @@ class AppSettings(context: Context) {
     fun resetUsage() {
         prefs.edit().remove("usage_cursor_ms").remove("usage_open_package").apply()
     }
+
+    /** The battery rules: pause level, Battery Saver, background updates, resume notice. */
+    var battery: BatteryOptions
+        get() = BatteryOptions(
+            thresholdPercent = prefs.getInt("battery_threshold", 20),
+            pauseOnBatterySaver = prefs.getBoolean("battery_saver_pause", true),
+            backgroundUpdates = prefs.getBoolean("background_updates", false),
+            notifyOnResume = prefs.getBoolean("notify_on_resume", false),
+        )
+        set(value) {
+            prefs.edit()
+                .putInt("battery_threshold", value.thresholdPercent.coerceIn(5, 50))
+                .putBoolean("battery_saver_pause", value.pauseOnBatterySaver)
+                .putBoolean("background_updates", value.backgroundUpdates)
+                .putBoolean("notify_on_resume", value.notifyOnResume)
+                .apply()
+        }
+
+    /** True once the "paused" notification has been sent for the current pause, so it is sent only once. */
+    var pauseNotified: Boolean
+        get() = prefs.getBoolean("pause_notified", false)
+        set(value) = prefs.edit().putBoolean("pause_notified", value).apply()
+
+    /** When the background job last updated the data (milliseconds since 1970; 0 = never). */
+    var lastBackgroundUpdateMs: Long
+        get() = prefs.getLong("last_background_update_ms", 0L)
+        set(value) = prefs.edit().putLong("last_background_update_ms", value).apply()
 
     /** Are the server details filled in enough to try a sync? */
     val syncConfigured: Boolean

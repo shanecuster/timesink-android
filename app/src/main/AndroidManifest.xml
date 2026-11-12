@@ -30,6 +30,20 @@
         tools:ignore="ProtectedPermissions" />
 
     <!--
+      RECEIVE_BOOT_COMPLETED: lets the one short scheduled check carry on after the
+      phone restarts. It is only scheduled while the user has turned on "update in
+      the background"; with that off, nothing is scheduled at all.
+    -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!--
+      POST_NOTIFICATIONS (Android 13+): so the app can say once, "Battery low.
+      timesink has paused tracking and sync." The app asks when the user turns on
+      background updates; if they decline, pausing still works, just silently.
+    -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!--
       Android 11+ hides other apps from this one unless it says what it needs to
       see. These two questions let the app read the name under each launchable
       app's icon, and tell the home screen (which is not "using an app") apart.
@@ -72,6 +86,43 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+          The short check Android runs every 15 minutes while background updates
+          are on (see Background.kt). Only Android itself may start it.
+        -->
+        <service
+            android:name=".TickJobService"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
+        <!--
+          Hears Android's "battery low" and "battery OK" announcements, so the
+          paused notice can come straight away. It does one small thing and ends.
+        -->
+        <receiver
+            android:name=".BatteryReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BATTERY_LOW" />
+                <action android:name="android.intent.action.BATTERY_OKAY" />
+            </intent-filter>
+        </receiver>
+
+        <!--
+          The Quick Settings tile that turns tracking and sync on or off from the
+          notification shade. The permission lets only Android's shade bind to it.
+        -->
+        <service
+            android:name=".TrackingTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_stat_timesink"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
     </application>
 
 </manifest>

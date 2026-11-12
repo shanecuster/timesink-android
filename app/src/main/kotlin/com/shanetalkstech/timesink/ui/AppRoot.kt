@@ -1,6 +1,12 @@
 package com.shanetalkstech.timesink.ui
 
+import android.Manifest
 import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -22,7 +28,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.shanetalkstech.timesink.AppSettings
+import com.shanetalkstech.timesink.Background
+import com.shanetalkstech.timesink.BatteryGuard
+import com.shanetalkstech.timesink.BatteryOptions
 import com.shanetalkstech.timesink.DeviceZone
 import com.shanetalkstech.timesink.UsageImporter
 import java.io.File
@@ -115,6 +125,12 @@ fun AppRoot(refreshKey: Int) {
     val settings = remember { AppSettings(context) }
     var showSettings by remember { mutableStateOf(false) }
     var enabled by remember { mutableStateOf(settings.enabled) }
+    // The battery rules as saved, and why the app is paused right now (if it is).
+    var battery by remember { mutableStateOf(settings.battery) }
+    var pauseReason by remember { mutableStateOf<String?>(null) }
+    // Asks Android's "allow notifications?" question (Android 13+). Whatever the
+    // answer, pausing still works; without it the notice is simply not shown.
+    val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
     var syncStatus by remember { mutableStateOf<SyncStatus?>(null) }
     var syncMessage by remember { mutableStateOf<String?>(null) }
     var syncFailed by remember { mutableStateOf(false) }
@@ -243,7 +259,14 @@ fun AppRoot(refreshKey: Int) {
     // "Sync when I open the app": once the database is ready, and at most every
     // few minutes. Needs the master switch, the option, and filled-in details.
     LaunchedEffect(refreshKey, database) {
-        // First record the phone's own use, so the sync below sends it too.
+        // The master switch may have been flipped from the Quick Settings tile.
+        enabled = settings.enabled
+        // Check the battery first: when paused, say so (once) and do nothing automatic.
+        pauseReason = BatteryGuard.checkAndNotify(context, settings)
+        // Keep the background schedule in step with the settings.
+        Background.reschedule(context)
+        if (pauseReason != null) return@LaunchedEffect
+        // Record the phone's own use, so the sync below sends it too.
         if (System.currentTimeMillis() - lastUsageImport > 60_000L) importUsage()
         val now = System.currentTimeMillis() / 1000L
         if (database != null && settings.enabled && settings.syncOnOpen && settings.syncConfigured &&
@@ -283,6 +306,11 @@ fun AppRoot(refreshKey: Int) {
                     onEnabledChange = {
                         enabled = it
                         settings.enabled = it
+                        // Starting or stopping the background job to match; a fresh
+                        // start should not remember an old pause notice.
+                        settings.pauseNotified = false
+                        Background.reschedule(context)
+                        pauseReason = if (it) BatteryGuard.pauseReason(context, settings) else null
                         // Turning tracking on records what the log already holds.
                         if (it) scope.launch { importUsage() }
                     },
@@ -320,6 +348,20 @@ fun AppRoot(refreshKey: Int) {
                             runSync()
                         }
                     },
+                    pauseReason = pauseReason,
+                    battery = battery,
+                    onBattery = { options: BatteryOptions ->
+                        val turnedOn = options.backgroundUpdates && !battery.backgroundUpdates
+                        battery = options
+                        settings.battery = options
+                        Background.reschedule(context)
+                        pauseReason = if (enabled) BatteryGuard.pauseReason(context, settings) else null
+                        // Turning on background updates is when notifications matter, so ask now.
+                        val needsAsk = Build.VERSION.SDK_INT >= 33 &&
+                            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+                            PackageManager.PERMISSION_GRANTED
+                        if (turnedOn && needsAsk) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    },
                     usageAllowed = usageAllowed,
                     usageLastSecs = settings.usageCursorMs.takeIf { it > 0 }?.div(1000L),
                     usageMessage = usageMessage,
@@ -352,6 +394,11 @@ fun AppRoot(refreshKey: Int) {
             // A small way into the settings, out of the way at the top right.
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 ActionButton(label = "settings", onClick = { showSettings = true })
+            }
+            // When paused for the battery, say so on the dashboard.
+            if (enabled && pauseReason != null) {
+                MonoText(text = "paused: $pauseReason", color = colors.warn, size = 12.sp)
+                Spacer(Modifier.height(4.dp))
             }
             val today = summary
             if (today != null) {

@@ -17,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.shanetalkstech.timesink.BatteryOptions
 import uniffi.timesink_ffi.SyncStatus
 
 /** The widest a settings text box is, so a web address has room on a phone. */
@@ -58,6 +59,9 @@ data class SyncDraft(
  * @param onSave called with the edited details when "save" is tapped.
  * @param onSyncNow called with the edited details when "sync now" is tapped; the
  *   caller saves them first.
+ * @param pauseReason why tracking is paused right now (such as `Battery low (19%)`), or `null`.
+ * @param battery the battery rules as saved.
+ * @param onBattery called with the new rules whenever one is changed.
  * @param usageAllowed whether Usage access has been granted to the app.
  * @param usageLastSecs when the phone's usage was last recorded (Unix seconds), or `null`.
  * @param usageMessage the result of the last recording, or `null`.
@@ -79,6 +83,9 @@ fun SettingsScreen(
     busy: Boolean,
     onSave: (SyncDraft) -> Unit,
     onSyncNow: (SyncDraft) -> Unit,
+    pauseReason: String?,
+    battery: BatteryOptions,
+    onBattery: (BatteryOptions) -> Unit,
     usageAllowed: Boolean,
     usageLastSecs: Long?,
     usageMessage: String?,
@@ -109,6 +116,60 @@ fun SettingsScreen(
                 },
                 color = colors.muted,
                 size = 12.sp,
+            )
+            if (enabled && pauseReason != null) {
+                Spacer(Modifier.height(4.dp))
+                MonoText(
+                    text = "Paused: $pauseReason. It starts again by itself.",
+                    color = colors.warn,
+                    size = 12.sp,
+                )
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+
+        TuiPanel(title = " Battery ", modifier = Modifier.fillMaxWidth()) {
+            // The pause level: tap - or + to change it in steps of 5.
+            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                MonoText(text = "pause at or below", color = colors.text, size = 14.sp)
+                ActionButton(
+                    label = "-",
+                    onClick = { onBattery(battery.copy(thresholdPercent = (battery.thresholdPercent - 5).coerceAtLeast(5))) },
+                )
+                MonoText(text = "${battery.thresholdPercent}%", color = colors.accent, bold = true, size = 14.sp)
+                ActionButton(
+                    label = "+",
+                    onClick = { onBattery(battery.copy(thresholdPercent = (battery.thresholdPercent + 5).coerceAtMost(50))) },
+                )
+            }
+            MonoText(
+                text = "Below this, tracking and sync pause (not while charging) and you get one notice.",
+                color = colors.muted,
+                size = 11.sp,
+            )
+            ToggleRow(
+                label = "Also pause when Battery Saver is on",
+                checked = battery.pauseOnBatterySaver,
+                onChange = { onBattery(battery.copy(pauseOnBatterySaver = it)) },
+            )
+            ToggleRow(
+                label = "Update in the background",
+                checked = battery.backgroundUpdates,
+                onChange = { onBattery(battery.copy(backgroundUpdates = it)) },
+            )
+            MonoText(
+                text = if (battery.backgroundUpdates) {
+                    "A short check every 15 minutes; it updates every few hours."
+                } else {
+                    "Off: the phone is only read when you open the app (uses the least battery)."
+                },
+                color = colors.muted,
+                size = 11.sp,
+            )
+            ToggleRow(
+                label = "Tell me when tracking resumes",
+                checked = battery.notifyOnResume,
+                onChange = { onBattery(battery.copy(notifyOnResume = it)) },
             )
         }
         Spacer(Modifier.height(8.dp))
