@@ -57,3 +57,20 @@ fun monthLabel(year: Int, month: Int): String {
     val name = java.time.Month.of(month).name.take(3).lowercase().replaceFirstChar { it.uppercase() }
     return "$name $year"
 }
+
+/**
+ * How long ago something happened, in a few words: `just now`, `5m ago`,
+ * `3h ago`, `2d ago`.
+ *
+ * @param nowSecs the current time, Unix seconds.
+ * @param thenSecs when it happened, Unix seconds.
+ */
+fun agoLabel(nowSecs: Long, thenSecs: Long): String {
+    val secs = (nowSecs - thenSecs).coerceAtLeast(0)
+    return when {
+        secs < 60 -> "just now"
+        secs < 3_600 -> "${secs / 60}m ago"
+        secs < 86_400 -> "${secs / 3_600}h ago"
+        else -> "${secs / 86_400}d ago"
+    }
+}

@@ -2,7 +2,10 @@ package com.shanetalkstech.timesink.ui
 
 import android.content.pm.ApplicationInfo
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
@@ -19,6 +22,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.shanetalkstech.timesink.AppSettings
 import com.shanetalkstech.timesink.DeviceZone
 import java.io.File
 import java.time.LocalDate
@@ -30,12 +34,14 @@ import uniffi.timesink_ffi.AppSecs
 import uniffi.timesink_ffi.Database
 import uniffi.timesink_ffi.DaySummary
 import uniffi.timesink_ffi.PeriodSummary
+import uniffi.timesink_ffi.SyncServer
+import uniffi.timesink_ffi.SyncStatus
 import uniffi.timesink_ffi.customRange
 import uniffi.timesink_ffi.defaultThemeName
 import uniffi.timesink_ffi.listThemes
 
-/** The name this phone is stored under in the data. A setting arrives with sync. */
-private const val DEVICE_ID = "phone"
+/** The shortest wait between two automatic "sync when I open the app" runs, in seconds. */
+private const val AUTO_SYNC_GAP_SECS = 300L
 
 /** Days of made-up data a debug build creates when its database is empty. */
 private const val DEMO_DAYS = 60L
@@ -102,6 +108,20 @@ fun AppRoot(refreshKey: Int) {
     var edits by remember { mutableStateOf(0) }
     val scope = rememberCoroutineScope()
 
+    // Settings (saved on the phone), and the settings screen's state: shown or
+    // not, how syncing has gone, the message about the last attempt, and whether
+    // a sync is running right now.
+    val settings = remember { AppSettings(context) }
+    var showSettings by remember { mutableStateOf(false) }
+    var enabled by remember { mutableStateOf(settings.enabled) }
+    var syncStatus by remember { mutableStateOf<SyncStatus?>(null) }
+    var syncMessage by remember { mutableStateOf<String?>(null) }
+    var syncFailed by remember { mutableStateOf(false) }
+    var syncBusy by remember { mutableStateOf(false) }
+    // When the last automatic sync started, so opening the app twice in a row
+    // does not sync twice.
+    var lastAutoSync by remember { mutableStateOf(0L) }
+
     // The database is opened once and kept for the life of this screen.
     var database by remember { mutableStateOf<Database?>(null) }
 
@@ -119,7 +139,8 @@ fun AppRoot(refreshKey: Int) {
             val data = withContext(Dispatchers.IO) {
                 val db = database ?: Database.open(
                     File(context.filesDir, "timesink.db").path,
-                    DEVICE_ID,
+                    // The device name typed on the settings screen.
+                    settings.deviceName,
                     // The phone's own app names and categories are saved here.
                     File(context.filesDir, "apps.conf").path,
                 )
@@ -143,10 +164,11 @@ fun AppRoot(refreshKey: Int) {
                 } else {
                     db.periodSummary(loadedFor.toBridge(), loadedOffset, loadedCustom, loadedDevice, now, zone)
                 }
-                Loaded(db, realToday, day, range, db.devices())
+                Loaded(db, realToday, day, range, db.devices(), db.syncStatus())
             }
             database = data.db
             devices = data.devices
+            syncStatus = data.syncStatus
             // A device that disappeared goes back to the combined view.
             if (loadedDevice != null && loadedDevice !in data.devices) device = null
             summary = data.today
@@ -157,6 +179,46 @@ fun AppRoot(refreshKey: Int) {
         } catch (e: Exception) {
             // Show the problem on screen instead of crashing.
             error = e.explain()
+        }
+    }
+
+    // Runs one sync with the saved server details, off the drawing thread, and
+    // shows how it went. Does nothing if the master switch is off or a sync is
+    // already running.
+    fun runSync() {
+        val db = database
+        if (db == null || !settings.enabled || syncBusy) return
+        syncBusy = true
+        syncMessage = null
+        scope.launch {
+            try {
+                val outcome = withContext(Dispatchers.IO) {
+                    db.syncNow(
+                        SyncServer(settings.serverUrl, settings.database, settings.user, settings.password),
+                    )
+                }
+                syncFailed = false
+                syncMessage = "Sent ${outcome.uploaded} day(s), received ${outcome.downloaded} day(s)." +
+                    outcome.warnings.joinToString("") { "\n$it" }
+            } catch (e: Exception) {
+                syncFailed = true
+                syncMessage = e.explain()
+            }
+            syncBusy = false
+            // Reload so new data from other devices shows up.
+            edits += 1
+        }
+    }
+
+    // "Sync when I open the app": once the database is ready, and at most every
+    // few minutes. Needs the master switch, the option, and filled-in details.
+    LaunchedEffect(refreshKey, database) {
+        val now = System.currentTimeMillis() / 1000L
+        if (database != null && settings.enabled && settings.syncOnOpen && settings.syncConfigured &&
+            now - lastAutoSync >= AUTO_SYNC_GAP_SECS
+        ) {
+            lastAutoSync = now
+            runSync()
         }
     }
 
@@ -180,6 +242,59 @@ fun AppRoot(refreshKey: Int) {
                 .safeDrawingPadding()
                 .padding(horizontal = 12.dp, vertical = 8.dp),
         ) {
+            // The settings screen replaces the dashboard while it is open.
+            if (showSettings) {
+                MonoText(text = "t i m e s i n k · settings", color = colors.accent, bold = true)
+                Spacer(Modifier.height(8.dp))
+                SettingsScreen(
+                    enabled = enabled,
+                    onEnabledChange = {
+                        enabled = it
+                        settings.enabled = it
+                    },
+                    initial = SyncDraft(
+                        url = settings.serverUrl,
+                        database = settings.database,
+                        user = settings.user,
+                        password = settings.password,
+                        deviceName = settings.deviceName,
+                        syncOnOpen = settings.syncOnOpen,
+                    ),
+                    status = syncStatus,
+                    nowSecs = System.currentTimeMillis() / 1000L,
+                    message = syncMessage,
+                    messageIsError = syncFailed,
+                    busy = syncBusy,
+                    onSave = { draft ->
+                        saveDraft(settings, draft)
+                        // A new device name means a new database object; drop the old one.
+                        database = null
+                        edits += 1
+                        syncMessage = "Saved."
+                        syncFailed = false
+                    },
+                    onSyncNow = { draft ->
+                        val renamed = AppSettings.cleanDeviceName(draft.deviceName) != settings.deviceName
+                        saveDraft(settings, draft)
+                        if (renamed) {
+                            // Reopen under the new name; the sync starts after the reload.
+                            database = null
+                            edits += 1
+                            syncMessage = "Saved. Press sync now again."
+                            syncFailed = false
+                        } else {
+                            runSync()
+                        }
+                    },
+                    onBack = { showSettings = false },
+                )
+                return@Column
+            }
+
+            // A small way into the settings, out of the way at the top right.
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                ActionButton(label = "settings", onClick = { showSettings = true })
+            }
             val today = summary
             if (today != null) {
                 Banner(today)
@@ -329,4 +444,16 @@ private class Loaded(
     val range: PeriodSummary?,
     /** Every device that has data. */
     val devices: List<String>,
+    /** How syncing has gone so far. */
+    val syncStatus: SyncStatus,
 )
+
+/** Writes the edited sync details to the phone's saved settings. */
+private fun saveDraft(settings: AppSettings, draft: SyncDraft) {
+    settings.serverUrl = draft.url
+    settings.database = draft.database
+    settings.user = draft.user
+    settings.password = draft.password
+    settings.deviceName = draft.deviceName
+    settings.syncOnOpen = draft.syncOnOpen
+}

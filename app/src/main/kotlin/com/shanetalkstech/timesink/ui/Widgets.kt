@@ -75,3 +75,23 @@ fun ActionButton(label: String, onClick: () -> Unit, modifier: Modifier = Modifi
         modifier = modifier.clickable(onClick = onClick).padding(horizontal = 6.dp, vertical = 10.dp),
     )
 }
+
+/**
+ * A tappable on/off row drawn like a terminal checkbox: `[x] label` or `[ ] label`.
+ *
+ * @param label the words next to the box.
+ * @param checked whether it is on.
+ * @param onChange called with the new value when tapped.
+ * @param modifier optional layout tweaks from the caller.
+ */
+@Composable
+fun ToggleRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit, modifier: Modifier = Modifier) {
+    val colors = LocalTimesinkColors.current
+    MonoText(
+        text = (if (checked) "[x] " else "[ ] ") + label,
+        color = if (checked) colors.accent else colors.text,
+        bold = checked,
+        size = 14.sp,
+        modifier = modifier.clickable { onChange(!checked) }.padding(vertical = 10.dp),
+    )
+}

@@ -4,11 +4,18 @@
   our code runs. It declares what the app is called, which screen opens first,
   and which special abilities (permissions) the app asks the user for.
 
-  No permissions are declared yet. Later steps add them one at a time, each with
-  a comment saying why it is needed: INTERNET when sync arrives, notifications
-  for the low-battery message, and Usage Access for the phone's own screen time.
+  Permissions are added one at a time, each with a comment saying why it is
+  needed. So far: INTERNET, for sync. Later: notifications for the low-battery
+  message, and Usage Access for the phone's own screen time.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      INTERNET: lets the app talk to the user's own CouchDB server when sync is
+      turned on. Nothing is sent unless the master switch is on and server
+      details have been typed in; the app contacts no other server.
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
         android:icon="@mipmap/ic_launcher"

@@ -15,6 +15,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -78,9 +81,18 @@ fun DatePrompt(
  * @param value the text in the box.
  * @param onChange called with the new text on every keystroke.
  * @param boxWidthDp how wide the box is.
+ * @param secret show dots instead of the text (for a password).
+ * @param keyboardType which keyboard to bring up (web address, password, ...).
  */
 @Composable
-fun LabeledField(label: String, value: String, onChange: (String) -> Unit, boxWidthDp: Int = 150) {
+fun LabeledField(
+    label: String,
+    value: String,
+    onChange: (String) -> Unit,
+    boxWidthDp: Int = 150,
+    secret: Boolean = false,
+    keyboardType: KeyboardType = KeyboardType.Text,
+) {
     val colors = LocalTimesinkColors.current
     Row {
         MonoText(text = label, color = colors.muted, size = 14.sp)
@@ -89,8 +101,9 @@ fun LabeledField(label: String, value: String, onChange: (String) -> Unit, boxWi
             value = value,
             onValueChange = onChange,
             singleLine = true,
-            // A plain text keyboard: the number pad on some phones has no "-".
-            keyboardOptions = KeyboardOptions.Default,
+            // A plain text keyboard by default: the number pad on some phones has no "-".
+            keyboardOptions = KeyboardOptions(keyboardType = if (secret) KeyboardType.Password else keyboardType),
+            visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
             textStyle = TextStyle(
                 color = colors.text,
                 fontFamily = MonoFont,

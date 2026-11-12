@@ -9,7 +9,8 @@ time. The look imitates the terminal app.
 30 days, year, all time, calendar week, quarter and custom dates, with stepping
 back and forward), a device filter once more than one device has data, a Sites
 panel when website time exists, and tap-to-edit names and categories for
-applications; sync and phone usage come next. Debug builds fill an empty
+applications. Sync with your own CouchDB is there but off until you turn on the
+master switch in settings; phone usage and the battery rules come next. Debug builds fill an empty
 database with made-up demo data so the screens can be tried and photographed;
 release builds start empty.
 
