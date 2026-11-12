@@ -24,6 +24,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.shanetalkstech.timesink.AppSettings
 import com.shanetalkstech.timesink.DeviceZone
+import com.shanetalkstech.timesink.UsageImporter
 import java.io.File
 import java.time.LocalDate
 import kotlinx.coroutines.Dispatchers
@@ -118,6 +119,17 @@ fun AppRoot(refreshKey: Int) {
     var syncMessage by remember { mutableStateOf<String?>(null) }
     var syncFailed by remember { mutableStateOf(false) }
     var syncBusy by remember { mutableStateOf(false) }
+    // Phone usage: whether Android's Usage access is allowed (checked again each
+    // time the app is opened, because the user grants it in another screen), and
+    // the message about the last recording.
+    val usageAllowed = remember(refreshKey) { UsageImporter.hasAccess(context) }
+    var usageMessage by remember { mutableStateOf<String?>(null) }
+    var usageBusy by remember { mutableStateOf(false) }
+    // When usage was last read in this run, to avoid reading twice within a minute.
+    var lastUsageImport by remember { mutableStateOf(0L) }
+    // Debug builds can show made-up data and delete local data.
+    val debuggable = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+
     // When the last automatic sync started, so opening the app twice in a row
     // does not sync twice.
     var lastAutoSync by remember { mutableStateOf(0L) }
@@ -147,8 +159,8 @@ fun AppRoot(refreshKey: Int) {
                 val zone = DeviceZone()
                 val now = System.currentTimeMillis() / 1000L
                 // Demo data: debug builds only, and only into an empty database.
-                val debuggable = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
-                if (debuggable && db.isEmpty()) {
+                // Demo data only while real tracking is off, so it never mixes with real use.
+                if (debuggable && !settings.enabled && db.isEmpty()) {
                     db.fillDemoData(now, DEMO_DAYS, DEMO_SEED, zone)
                 }
                 // The banner always shows the real today.
@@ -182,6 +194,24 @@ fun AppRoot(refreshKey: Int) {
         }
     }
 
+    // Reads Android's usage log into the database (off the drawing thread) and
+    // reloads the numbers if anything new was recorded. Needs the master switch
+    // and Usage access. Returns without doing anything otherwise.
+    suspend fun importUsage() {
+        val db = database
+        if (db == null || !settings.enabled || !usageAllowed || usageBusy) return
+        usageBusy = true
+        try {
+            val recorded = withContext(Dispatchers.IO) { UsageImporter.importNow(context, db, settings) }
+            lastUsageImport = System.currentTimeMillis()
+            usageMessage = "Recorded $recorded stretch(es) of app use."
+            if (recorded > 0) edits += 1
+        } catch (e: Exception) {
+            usageMessage = e.explain()
+        }
+        usageBusy = false
+    }
+
     // Runs one sync with the saved server details, off the drawing thread, and
     // shows how it went. Does nothing if the master switch is off or a sync is
     // already running.
@@ -213,6 +243,8 @@ fun AppRoot(refreshKey: Int) {
     // "Sync when I open the app": once the database is ready, and at most every
     // few minutes. Needs the master switch, the option, and filled-in details.
     LaunchedEffect(refreshKey, database) {
+        // First record the phone's own use, so the sync below sends it too.
+        if (System.currentTimeMillis() - lastUsageImport > 60_000L) importUsage()
         val now = System.currentTimeMillis() / 1000L
         if (database != null && settings.enabled && settings.syncOnOpen && settings.syncConfigured &&
             now - lastAutoSync >= AUTO_SYNC_GAP_SECS
@@ -251,6 +283,8 @@ fun AppRoot(refreshKey: Int) {
                     onEnabledChange = {
                         enabled = it
                         settings.enabled = it
+                        // Turning tracking on records what the log already holds.
+                        if (it) scope.launch { importUsage() }
                     },
                     initial = SyncDraft(
                         url = settings.serverUrl,
@@ -284,6 +318,30 @@ fun AppRoot(refreshKey: Int) {
                             syncFailed = false
                         } else {
                             runSync()
+                        }
+                    },
+                    usageAllowed = usageAllowed,
+                    usageLastSecs = settings.usageCursorMs.takeIf { it > 0 }?.div(1000L),
+                    usageMessage = usageMessage,
+                    onAllowUsage = { context.startActivity(UsageImporter.accessSettingsIntent()) },
+                    onRecordNow = { scope.launch { importUsage() } },
+                    debug = debuggable,
+                    onWipe = {
+                        val old = database
+                        database = null
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                // Close the open database, then remove its files.
+                                old?.close()
+                                for (suffix in listOf("", "-wal", "-shm")) {
+                                    File(context.filesDir, "timesink.db$suffix").delete()
+                                }
+                                settings.resetUsage()
+                            }
+                            usageMessage = null
+                            syncMessage = "Local data deleted."
+                            syncFailed = false
+                            edits += 1
                         }
                     },
                     onBack = { showSettings = false },

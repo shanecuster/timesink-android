@@ -58,6 +58,13 @@ data class SyncDraft(
  * @param onSave called with the edited details when "save" is tapped.
  * @param onSyncNow called with the edited details when "sync now" is tapped; the
  *   caller saves them first.
+ * @param usageAllowed whether Usage access has been granted to the app.
+ * @param usageLastSecs when the phone's usage was last recorded (Unix seconds), or `null`.
+ * @param usageMessage the result of the last recording, or `null`.
+ * @param onAllowUsage called when "allow usage access" is tapped (opens Android's settings).
+ * @param onRecordNow called when "record now" is tapped.
+ * @param debug true in debug builds, which add a button to delete all local data.
+ * @param onWipe called after the delete button is tapped twice (debug builds only).
  * @param onBack called when "back" is tapped.
  */
 @Composable
@@ -72,11 +79,20 @@ fun SettingsScreen(
     busy: Boolean,
     onSave: (SyncDraft) -> Unit,
     onSyncNow: (SyncDraft) -> Unit,
+    usageAllowed: Boolean,
+    usageLastSecs: Long?,
+    usageMessage: String?,
+    onAllowUsage: () -> Unit,
+    onRecordNow: () -> Unit,
+    debug: Boolean,
+    onWipe: () -> Unit,
     onBack: () -> Unit,
 ) {
     val colors = LocalTimesinkColors.current
     // The edits so far; they start as the saved details.
     var draft by remember { mutableStateOf(initial) }
+    // The delete button needs two taps; this remembers the first.
+    var confirmWipe by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
         TuiPanel(title = " This phone ", modifier = Modifier.fillMaxWidth()) {
@@ -94,6 +110,35 @@ fun SettingsScreen(
                 color = colors.muted,
                 size = 12.sp,
             )
+        }
+        Spacer(Modifier.height(8.dp))
+
+        TuiPanel(title = " Phone usage ", modifier = Modifier.fillMaxWidth()) {
+            MonoText(
+                text = "Records which apps you use on this phone, and for how long. " +
+                    "Only app names and times; nothing inside an app is read.",
+                color = colors.muted,
+                size = 12.sp,
+            )
+            Spacer(Modifier.height(6.dp))
+            if (!usageAllowed) {
+                MonoText(text = "Usage access: not allowed yet", color = colors.warn, size = 13.sp)
+                ActionButton(label = "allow usage access", onClick = onAllowUsage)
+            } else {
+                MonoText(text = "Usage access: allowed", color = colors.ok, size = 13.sp)
+                MonoText(
+                    text = if (usageLastSecs != null) "recorded  ${agoLabel(nowSecs, usageLastSecs)}" else "not recorded yet",
+                    color = colors.text,
+                    size = 13.sp,
+                )
+                when {
+                    !enabled -> MonoText(text = "Turn the switch above on to record.", color = colors.muted, size = 12.sp)
+                    else -> ActionButton(label = "record now", onClick = onRecordNow)
+                }
+            }
+            if (usageMessage != null) {
+                MonoText(text = usageMessage, color = colors.ok, size = 12.sp)
+            }
         }
         Spacer(Modifier.height(8.dp))
 
@@ -148,6 +193,21 @@ fun SettingsScreen(
                 else -> ActionButton(label = "sync now", onClick = { onSyncNow(draft) })
             }
             ActionButton(label = "back", onClick = onBack)
+        }
+        if (debug) {
+            Spacer(Modifier.height(10.dp))
+            // Debug builds only: start again from nothing, e.g. to drop the demo data.
+            ActionButton(
+                label = if (confirmWipe) "really delete everything on this phone?" else "delete all local data (debug)",
+                onClick = {
+                    if (confirmWipe) {
+                        confirmWipe = false
+                        onWipe()
+                    } else {
+                        confirmWipe = true
+                    }
+                },
+            )
         }
     }
 }

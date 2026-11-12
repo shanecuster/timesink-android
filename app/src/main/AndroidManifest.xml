@@ -8,7 +8,8 @@
   needed. So far: INTERNET, for sync. Later: notifications for the low-battery
   message, and Usage Access for the phone's own screen time.
 -->
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!--
       INTERNET: lets the app talk to the user's own CouchDB server when sync is
@@ -16,6 +17,33 @@
       details have been typed in; the app contacts no other server.
     -->
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <!--
+      PACKAGE_USAGE_STATS ("Usage access"): lets the app read Android's own log of
+      which app was in front and when, to record the phone's screen time. The
+      user grants it by hand in Android's settings; the app records nothing until
+      they do. Only app names and times are read, never anything inside an app.
+      (Android marks this permission "protected", hence the lint note.)
+    -->
+    <uses-permission
+        android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
+
+    <!--
+      Android 11+ hides other apps from this one unless it says what it needs to
+      see. These two questions let the app read the name under each launchable
+      app's icon, and tell the home screen (which is not "using an app") apart.
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.HOME" />
+        </intent>
+    </queries>
 
     <application
         android:icon="@mipmap/ic_launcher"

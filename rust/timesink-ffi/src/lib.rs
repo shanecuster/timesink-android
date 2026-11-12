@@ -476,7 +476,7 @@ pub struct UsageEvent {
     pub ts_ms: i64,
     /// The app's package name, such as `com.android.chrome` (unused for
     /// `ScreenOff` and `Nothing`).
-    pub package: String,
+    pub package_name: String,
     /// What happened.
     pub kind: UsageKind,
 }
@@ -485,7 +485,7 @@ pub struct UsageEvent {
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct AppLabel {
     /// The package name.
-    pub package: String,
+    pub package_name: String,
     /// The label the user sees under the app's icon.
     pub label: String,
 }
@@ -739,9 +739,9 @@ impl Database {
         // Give apps their own names, without touching ones already named.
         let mut named_any = false;
         for l in &labels {
-            let known = self.map()?.lookup(&l.package).mapped;
+            let known = self.map()?.lookup(&l.package_name).mapped;
             if !known
-                && appmap::append_entry(&self.conf_path, &l.package, &l.label, "Other").is_ok()
+                && appmap::append_entry(&self.conf_path, &l.package_name, &l.label, "Other").is_ok()
             {
                 named_any = true;
             }
@@ -1088,15 +1088,15 @@ fn usage_stretches(
         match e.kind {
             UsageKind::Resumed => {
                 // The same app resuming again changes nothing.
-                if open.as_ref().is_some_and(|(p, _)| *p == e.package) {
+                if open.as_ref().is_some_and(|(p, _)| *p == e.package_name) {
                     continue;
                 }
                 close(&mut open, e.ts_ms, &mut out);
-                open = Some((e.package, e.ts_ms));
+                open = Some((e.package_name, e.ts_ms));
             }
             UsageKind::Paused => {
                 // Only the app in front can leave the front.
-                if open.as_ref().is_some_and(|(p, _)| *p == e.package) {
+                if open.as_ref().is_some_and(|(p, _)| *p == e.package_name) {
                     close(&mut open, e.ts_ms, &mut out);
                 }
             }
@@ -1541,7 +1541,7 @@ mod tests {
     fn ev(ts_s: i64, package: &str, kind: UsageKind) -> UsageEvent {
         UsageEvent {
             ts_ms: ts_s * 1000,
-            package: package.to_string(),
+            package_name: package.to_string(),
             kind,
         }
     }
@@ -1615,7 +1615,7 @@ mod tests {
             "phone".to_string(),
         );
         let label = AppLabel {
-            package: "com.example.maps".into(),
+            package_name: "com.example.maps".into(),
             label: "Example Maps".into(),
         };
         let first = db

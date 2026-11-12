@@ -63,6 +63,24 @@ class AppSettings(context: Context) {
         get() = prefs.getBoolean("sync_on_open", false)
         set(value) = prefs.edit().putBoolean("sync_on_open", value).apply()
 
+    /**
+     * How far Android's usage log has been read, in milliseconds since 1970
+     * (0 = not yet). The next import starts from here, so nothing is counted twice.
+     */
+    var usageCursorMs: Long
+        get() = prefs.getLong("usage_cursor_ms", 0L)
+        set(value) = prefs.edit().putLong("usage_cursor_ms", value).apply()
+
+    /** The app that was still in front when the log was last read, or `null`. */
+    var usageOpenPackage: String?
+        get() = prefs.getString("usage_open_package", null)
+        set(value) = prefs.edit().putString("usage_open_package", value).apply()
+
+    /** Forgets how far the usage log was read (used after local data is deleted). */
+    fun resetUsage() {
+        prefs.edit().remove("usage_cursor_ms").remove("usage_open_package").apply()
+    }
+
     /** Are the server details filled in enough to try a sync? */
     val syncConfigured: Boolean
         get() = serverUrl.isNotEmpty() && database.isNotEmpty() && user.isNotEmpty() && password.isNotEmpty()
