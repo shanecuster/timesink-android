@@ -41,7 +41,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.timesink_ffi.CustomSpan
-import uniffi.timesink_ffi.AppSecs
 import uniffi.timesink_ffi.Database
 import uniffi.timesink_ffi.DaySummary
 import uniffi.timesink_ffi.PeriodSummary
@@ -113,7 +112,7 @@ fun AppRoot(refreshKey: Int) {
     // The app editor: the app being edited (`null` = closed), the categories to
     // offer, the message about the last save, and a counter bumped after a save
     // so the numbers reload with the new names.
-    var editing by remember { mutableStateOf<AppSecs?>(null) }
+    var editing by remember { mutableStateOf<EditTarget?>(null) }
     var editCategories by remember { mutableStateOf<List<String>>(emptyList()) }
     var editError by remember { mutableStateOf<String?>(null) }
     var edits by remember { mutableStateOf(0) }
@@ -286,11 +285,11 @@ fun AppRoot(refreshKey: Int) {
     CompositionLocalProvider(
         LocalTimesinkColors provides colors,
         LocalThemeName provides palette.name,
-        // Tapping an application row opens the editor for it.
-        LocalAppTapped provides { app: AppSecs ->
+        // Tapping an application or website row opens the editor for it.
+        LocalAppTapped provides { target: EditTarget ->
             editCategories = database?.categories() ?: emptyList()
             editError = null
-            editing = app
+            editing = target
         },
     ) {
         Column(
@@ -435,9 +434,9 @@ fun AppRoot(refreshKey: Int) {
             error?.let { MonoText(text = it, color = colors.danger) }
 
             // The app editor replaces the screen's content while it is open.
-            editing?.let { app ->
+            editing?.let { target ->
                 AppEditor(
-                    app = app,
+                    target = target,
                     categories = editCategories,
                     error = editError,
                     onSave = { name, category ->
@@ -446,7 +445,11 @@ fun AppRoot(refreshKey: Int) {
                             scope.launch {
                                 try {
                                     // Saving writes a file, so it runs off the drawing thread.
-                                    withContext(Dispatchers.IO) { db.setApp(app.raws, name, category) }
+                                    withContext(Dispatchers.IO) {
+                                        // Sites are saved to the site list, apps to the app list.
+                                        if (target.isSite) db.setSite(target.ids, name, category)
+                                        else db.setApp(target.ids, name, category)
+                                    }
                                     editing = null
                                     editError = null
                                     // Reload so every screen shows the new names.

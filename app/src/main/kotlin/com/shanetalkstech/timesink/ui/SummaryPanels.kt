@@ -9,12 +9,12 @@ import uniffi.timesink_ffi.NameSecs
 import uniffi.timesink_ffi.SiteSecs
 
 /**
- * What to do when an application row is tapped. The app's root provides it (it
- * opens the editor); a screen drawn without one simply ignores taps. A
+ * What to do when an application or website row is tapped. The app's root provides
+ * it (it opens the editor); a screen drawn without one simply ignores taps. A
  * CompositionLocal lets every screen's panel reach it without passing it down
  * through each layout.
  */
-val LocalAppTapped = compositionLocalOf<(AppSecs) -> Unit> { {} }
+val LocalAppTapped = compositionLocalOf<(EditTarget) -> Unit> { {} }
 
 /**
  * The "Categories" panel: one bar per category, biggest first, with the period's
@@ -67,7 +67,7 @@ fun ApplicationsPanel(apps: List<AppSecs>, nameChars: Int = NAME_COLUMN_CHARS) {
             BarRow(
                 row.name, row.secs, max, categoryColorFor(row.colorIndex), nameChars,
                 // Tapping a row opens the editor for its name and category.
-                onClick = { onTap(row) },
+                onClick = { onTap(EditTarget(row.name, row.category, row.raws, isSite = false)) },
             )
         }
     }
@@ -116,8 +116,13 @@ fun SitesPanel(sites: List<SiteSecs>, nameChars: Int = NAME_COLUMN_CHARS) {
     if (sites.isEmpty()) return
     TuiPanel(title = " Sites ", modifier = Modifier.fillMaxWidth()) {
         val max = sites.maxOfOrNull { it.secs } ?: 1L
+        val onTap = LocalAppTapped.current
         for (row in sites) {
-            BarRow(row.name, row.secs, max, categoryColorFor(row.colorIndex), nameChars)
+            BarRow(
+                row.name, row.secs, max, categoryColorFor(row.colorIndex), nameChars,
+                // Tapping a site opens the same editor, saved to the site list.
+                onClick = { onTap(EditTarget(row.name, row.category, listOf(row.site), isSite = true)) },
+            )
         }
     }
 }

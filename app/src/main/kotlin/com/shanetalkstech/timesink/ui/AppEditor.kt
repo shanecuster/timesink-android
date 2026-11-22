@@ -21,20 +21,35 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import uniffi.timesink_ffi.AppSecs
 
 /** The category every unlisted app gets; always offered in the editor. */
 private const val OTHER = "Other"
 
 /**
- * The editor for one application's name and category, opened by tapping an app
+ * What the editor is changing: one row of the Applications or Sites panel.
+ *
+ * @param name the short name shown now.
+ * @param category the category it is in now.
+ * @param ids what the saved lines are keyed by: Android package names for an app,
+ *   the registered site (such as `github.com`) for a website.
+ * @param isSite true for a website row, so it is saved to the site list instead.
+ */
+data class EditTarget(
+    val name: String,
+    val category: String,
+    val ids: List<String>,
+    val isSite: Boolean,
+)
+
+/**
+ * The editor for one application's or website's name and category, opened by tapping an app
  * row. It is the phone version of the terminal app's `a` flow: change the short
  * name, then pick a category from the wrapping chips or type a new one.
  *
  * Nothing recorded is changed; only the names shown. The change is saved to the
  * phone's own list and applies to all history.
  *
- * @param app the application being edited.
+ * @param target the application or website being edited.
  * @param categories the categories already in use, in colour order.
  * @param error a message about the last save attempt, or `null`.
  * @param onSave called with the new name and category when "save" is tapped.
@@ -43,7 +58,7 @@ private const val OTHER = "Other"
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AppEditor(
-    app: AppSecs,
+    target: EditTarget,
     categories: List<String>,
     error: String?,
     onSave: (name: String, category: String) -> Unit,
@@ -51,16 +66,19 @@ fun AppEditor(
 ) {
     val colors = LocalTimesinkColors.current
     // The edits so far. They start as the app's current name and category.
-    var name by remember(app) { mutableStateOf(app.name) }
-    var chosen by remember(app) { mutableStateOf(app.category) }
-    var typed by remember(app) { mutableStateOf("") }
+    var name by remember(target) { mutableStateOf(target.name) }
+    var chosen by remember(target) { mutableStateOf(target.category) }
+    var typed by remember(target) { mutableStateOf("") }
 
-    TuiPanel(title = " Edit application ", modifier = Modifier.fillMaxWidth()) {
+    TuiPanel(
+        title = if (target.isSite) " Edit website " else " Edit application ",
+        modifier = Modifier.fillMaxWidth(),
+    ) {
         // The editor sits above a screen that does not scroll for it, so it
         // scrolls itself when it is taller than this, however many categories
         // there come to be.
         Column(modifier = Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
-            MonoText(text = app.raws.joinToString(", "), color = colors.muted, size = 11.sp)
+            MonoText(text = target.ids.joinToString(", "), color = colors.muted, size = 11.sp)
             Spacer(Modifier.height(8.dp))
             LabeledField(label = "name    ", value = name, onChange = { name = it })
             Spacer(Modifier.height(8.dp))
