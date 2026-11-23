@@ -9,7 +9,8 @@ time. The look imitates the terminal app.
 30 days, year, all time, calendar week, quarter and custom dates, with stepping
 back and forward), a device filter once more than one device has data, a Sites
 panel when website time exists, and tap-to-edit names and categories for
-applications and websites (they share one category list and its colours; there
+applications and websites (they share one category list and its colours, and
+website time is also shown by category; there
 is no built-in site list, so sites start uncategorised until you or another
 device names them). Sync with your own CouchDB, and recording the phone's own app use (from
 Android's Usage access), are there but off until you turn on the master switch
