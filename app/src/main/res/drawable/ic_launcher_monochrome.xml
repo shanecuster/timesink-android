@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  PLACEHOLDER launcher icon (monochrome layer, used for themed icons on
-  Android 13+): the same three bars in a single colour. Android recolours it.
+  The launcher icon's monochrome layer (themed icons on Android 13+): the same
+  three bars in a single colour, which Android recolours.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -10,5 +10,5 @@
     android:viewportHeight="108">
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M30,72h12v-14h-12zM48,72h12v-26h-12zM66,72h12v-38h-12z" />
+        android:pathData="M34.2,54.75h7.2a2.7,2.7 0 0 1 2.7,2.7v14.1a2.7,2.7 0 0 1 -2.7,2.7h-7.2a2.7,2.7 0 0 1 -2.7,-2.7v-14.1a2.7,2.7 0 0 1 2.7,-2.7zM50.4,44.25h7.2a2.7,2.7 0 0 1 2.7,2.7v24.6a2.7,2.7 0 0 1 -2.7,2.7h-7.2a2.7,2.7 0 0 1 -2.7,-2.7v-24.6a2.7,2.7 0 0 1 2.7,-2.7zM66.6,33.75h7.2a2.7,2.7 0 0 1 2.7,2.7v35.1a2.7,2.7 0 0 1 -2.7,2.7h-7.2a2.7,2.7 0 0 1 -2.7,-2.7v-35.1a2.7,2.7 0 0 1 2.7,-2.7z" />
 </vector>

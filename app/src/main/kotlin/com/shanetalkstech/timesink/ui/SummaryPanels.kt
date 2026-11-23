@@ -1,20 +1,23 @@
 package com.shanetalkstech.timesink.ui
 
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import uniffi.timesink_ffi.AppSecs
 import uniffi.timesink_ffi.NameSecs
 import uniffi.timesink_ffi.SiteSecs
 
 /**
- * What to do when an application row is tapped. The app's root provides it (it
- * opens the editor); a screen drawn without one simply ignores taps. A
+ * What to do when an application or website row is tapped. The app's root provides
+ * it (it opens the editor); a screen drawn without one simply ignores taps. A
  * CompositionLocal lets every screen's panel reach it without passing it down
  * through each layout.
  */
-val LocalAppTapped = compositionLocalOf<(AppSecs) -> Unit> { {} }
+val LocalAppTapped = compositionLocalOf<(EditTarget) -> Unit> { {} }
 
 /**
  * The "Categories" panel: one bar per category, biggest first, with the period's
@@ -67,7 +70,7 @@ fun ApplicationsPanel(apps: List<AppSecs>, nameChars: Int = NAME_COLUMN_CHARS) {
             BarRow(
                 row.name, row.secs, max, categoryColorFor(row.colorIndex), nameChars,
                 // Tapping a row opens the editor for its name and category.
-                onClick = { onTap(row) },
+                onClick = { onTap(EditTarget(row.name, row.category, row.raws, isSite = false)) },
             )
         }
     }
@@ -104,9 +107,23 @@ fun ListeningPanel(
 }
 
 /**
- * The "Sites" panel: time on websites, coloured by site category. It draws nothing
- * at all when no website time exists (the phone has none of its own; it appears
- * once the desktop's browser extension data has been synced).
+ * Website time added up by category, biggest first. Sites share one category list
+ * with apps, so every site in a category has the same colour slot and the first
+ * row's slot stands for the whole category. Sites with no category of their own
+ * arrive as "Other".
+ */
+fun siteCategoryTotals(sites: List<SiteSecs>): List<NameSecs> =
+    sites.groupBy { it.category }
+        .map { (category, rows) ->
+            NameSecs(category, rows.sumOf { it.secs }, rows.first().colorIndex)
+        }
+        .sortedByDescending { it.secs }
+
+/**
+ * The website panels: "Site categories" (time per category, with the websites' total
+ * in the title) above "Sites" (time per website), both coloured by category. They
+ * draw nothing at all when no website time exists (it appears once the desktop's
+ * browser extension data has been synced).
  *
  * @param sites the rows, already sorted biggest first.
  * @param nameChars how many characters of a name fit (more on a wide screen).
@@ -114,10 +131,27 @@ fun ListeningPanel(
 @Composable
 fun SitesPanel(sites: List<SiteSecs>, nameChars: Int = NAME_COLUMN_CHARS) {
     if (sites.isEmpty()) return
+    // Website time by category, in the same style as the Categories panel above.
+    val byCategory = siteCategoryTotals(sites)
+    TuiPanel(
+        title = " Site categories · ${formatDuration(sites.sumOf { it.secs })} ",
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        val most = byCategory.maxOfOrNull { it.secs } ?: 1L
+        for (row in byCategory) {
+            BarRow(row.name, row.secs, most, categoryColorFor(row.colorIndex), nameChars)
+        }
+    }
+    Spacer(Modifier.height(8.dp))
     TuiPanel(title = " Sites ", modifier = Modifier.fillMaxWidth()) {
         val max = sites.maxOfOrNull { it.secs } ?: 1L
+        val onTap = LocalAppTapped.current
         for (row in sites) {
-            BarRow(row.name, row.secs, max, categoryColorFor(row.colorIndex), nameChars)
+            BarRow(
+                row.name, row.secs, max, categoryColorFor(row.colorIndex), nameChars,
+                // Tapping a site opens the same editor, saved to the site list.
+                onClick = { onTap(EditTarget(row.name, row.category, listOf(row.site), isSite = true)) },
+            )
         }
     }
 }

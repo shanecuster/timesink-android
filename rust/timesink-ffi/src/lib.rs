@@ -257,6 +257,9 @@ pub struct AppSecs {
 /// Time on one website (recorded by the desktop browser extension and synced).
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct SiteSecs {
+    /// The registered site, such as "github.com". It is what `set_site` needs to
+    /// rename the site or move it to another category.
+    pub site: String,
     /// Friendly site name, such as "github".
     pub name: String,
     /// The site's category.
@@ -532,17 +535,6 @@ com.google.android.apps.maps maps       Utilities
 com.android.settings     settings       Utilities
 ";
 
-/// Built-in site names and categories (the `domains.conf` format: site, display
-/// name, category). Used for the Sites panel until sites become editable.
-const DEFAULT_SITES: &str = "\
-github.com         github         Development
-stackoverflow.com  stackoverflow  Development
-wikipedia.org      wikipedia      Reference
-youtube.com        youtube        Video
-reddit.com         reddit         Social
-espn.com           espn           Sports
-";
-
 // ---------------------------------------------------------------------------
 // The database
 // ---------------------------------------------------------------------------
@@ -563,8 +555,9 @@ pub struct Database {
     map: RwLock<AppMap>,
     /// Where the user's own app edits are saved (an `apps.conf` file).
     conf_path: PathBuf,
-    /// Site names and categories for the Sites panel (built-in list plus the ones
-    /// shared by other computers). Behind a lock because a sync replaces it.
+    /// Site names and categories for the Sites panel (the phone's own `domains.conf`
+    /// plus the ones shared by other computers). Behind a lock because editing a
+    /// site or a sync replaces it.
     sites: RwLock<DomainConfig>,
     /// The database file, so a sync can use a connection of its own.
     path: PathBuf,
@@ -579,7 +572,7 @@ impl Database {
         // Built before the database goes behind its lock: the lists include the
         // ones other computers have shared (kept in the database).
         let map = build_map(&conf_path, &db);
-        let sites = build_sites(&db);
+        let sites = build_sites(&domains_path_for(&conf_path), &db);
         Database {
             db: Mutex::new(db),
             map: RwLock::new(map),
@@ -596,7 +589,10 @@ impl Database {
     fn rebuild_lists(&self) -> Result<(), FfiError> {
         let (map, sites) = {
             let db = self.lock()?;
-            (build_map(&self.conf_path, &db), build_sites(&db))
+            (
+                build_map(&self.conf_path, &db),
+                build_sites(&self.domains_path(), &db),
+            )
         };
         let poisoned = || FfiError::Failed {
             detail: "a list lock was poisoned by an earlier panic".to_string(),
@@ -632,15 +628,32 @@ impl Database {
             .map(|i| i as u32)
     }
 
-    /// The same, for a site category.
+    /// Every category in one list: the app categories first, then any only sites use.
+    /// Sites are coloured and edited against this list, so a category has the same
+    /// colour in the Apps and Sites panels. "Other" is never in it.
+    fn shared_categories(&self) -> Vec<String> {
+        let mut all = self.map.read().map(|m| m.categories()).unwrap_or_default();
+        if let Ok(config) = self.sites.read() {
+            for c in config.sites.categories() {
+                if c != appmap::OTHER && !all.contains(&c) {
+                    all.push(c);
+                }
+            }
+        }
+        all
+    }
+
+    /// The colour slot of a site category (see [`Database::shared_categories`]).
     fn site_color_index(&self, category: &str) -> Option<u32> {
-        let config = self.sites.read().ok()?;
-        config
-            .sites
-            .categories()
+        self.shared_categories()
             .iter()
             .position(|c| c == category)
             .map(|i| i as u32)
+    }
+
+    /// Where the phone's own site list lives: `domains.conf` next to `apps.conf`.
+    fn domains_path(&self) -> PathBuf {
+        domains_path_for(&self.conf_path)
     }
 }
 
@@ -693,14 +706,14 @@ impl Database {
         }
         let db = Db::open(&self.path, &self.device_id)?;
         let mut remote = HttpRemote::new(config);
-        // Share the phone's own names and categories too (the phone has no site list
-        // of its own to share).
+        // Share the phone's own names and categories too, for apps and for sites.
         let (apps, apps_updated) = read_user_conf(&self.conf_path);
+        let (domains, domains_updated) = read_user_conf(&self.domains_path());
         let own = ConfLists {
             apps,
             apps_updated,
-            domains: String::new(),
-            domains_updated: 0,
+            domains,
+            domains_updated,
         };
         let outcome = sync::run_with_lists(&db, &mut remote, Some(&own));
         // Remember how it went; failing to write the note is not worth failing over.
@@ -801,10 +814,11 @@ impl Database {
         Ok(self.lock()?.devices()?)
     }
 
-    /// The category names the app list knows, in colour order. "Other" is not
-    /// included; the editor adds it and the "new category" action itself.
+    /// The category names apps and sites use, in colour order (app categories first).
+    /// "Other" is not included; the editor adds it and the "new category" action
+    /// itself.
     pub fn categories(&self) -> Result<Vec<String>, FfiError> {
-        Ok(self.map()?.categories())
+        Ok(self.shared_categories())
     }
 
     /// Gives every app id in `raws` the display name and category, saving the
@@ -826,6 +840,30 @@ impl Database {
         }
         for raw in &raws {
             appmap::append_entry(&self.conf_path, raw, &display, &category)?;
+        }
+        self.rebuild_lists()
+    }
+
+    /// Gives every site in `sites` (such as "github.com") the display name and
+    /// category, saving the change to the phone's own site list and re-sorting all
+    /// history at once. Like `set_app`, nothing recorded is rewritten.
+    pub fn set_site(
+        &self,
+        sites: Vec<String>,
+        display: String,
+        category: String,
+    ) -> Result<(), FfiError> {
+        // Check every line first so a bad name saves nothing at all.
+        for site in &sites {
+            if appmap::entry_line(site, &display, &category).is_none() {
+                return Err(FfiError::Failed {
+                    detail: "the name and category must not be empty".to_string(),
+                });
+            }
+        }
+        let path = self.domains_path();
+        for site in &sites {
+            appmap::append_entry(&path, site, &display, &category)?;
         }
         self.rebuild_lists()
     }
@@ -1076,6 +1114,7 @@ impl Database {
         snap.sites
             .iter()
             .map(|s| SiteSecs {
+                site: s.site.clone(),
                 name: s.display.clone(),
                 category: s.category.clone(),
                 secs: s.secs,
@@ -1174,11 +1213,18 @@ fn build_map(conf_path: &Path, db: &Db) -> AppMap {
     AppMap::from_layers(&layers).with_browser_defaults()
 }
 
-/// The site list: the built-in sites plus the ones other computers shared, newest
-/// change winning.
-fn build_sites(db: &Db) -> DomainConfig {
+/// `domains.conf`, kept next to the `apps.conf` at `conf_path`.
+fn domains_path_for(conf_path: &Path) -> PathBuf {
+    conf_path.with_file_name("domains.conf")
+}
+
+/// The site list: the phone's own `domains.conf` plus the ones other computers
+/// shared, newest change winning. There is no built-in list: sites start out
+/// uncategorised until someone (you, or another device) names them.
+fn build_sites(domains_path: &Path, db: &Db) -> DomainConfig {
+    let (own, own_updated) = read_user_conf(domains_path);
     let remote = db.remote_confs().unwrap_or_default();
-    let mut layers: Vec<(&str, i64)> = vec![(DEFAULT_SITES, 0)];
+    let mut layers: Vec<(&str, i64)> = vec![(own.as_str(), own_updated)];
     layers.extend(
         remote
             .iter()
@@ -1301,15 +1347,18 @@ mod tests {
     /// A Friday afternoon (UTC), after the demo data's morning work block.
     const NOW: i64 = 20_000 * 86_400 + 14 * 3_600;
 
-    /// A path for a throwaway `apps.conf`, different for every test.
+    /// A path for a throwaway `apps.conf`, in a folder of its own for every test (the
+    /// phone's `domains.conf` is kept next to it, so tests must not share a folder).
     fn temp_conf() -> PathBuf {
         use std::sync::atomic::{AtomicU32, Ordering};
         static NEXT: AtomicU32 = AtomicU32::new(0);
-        std::env::temp_dir().join(format!(
-            "timesink-ffi-test-{}-{}.conf",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ))
+        std::env::temp_dir()
+            .join(format!(
+                "timesink-ffi-test-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ))
+            .join("apps.conf")
     }
 
     /// A fresh in-memory database, wrapped the way Kotlin would hold it.
@@ -1545,6 +1594,13 @@ mod tests {
     #[test]
     fn device_filter_and_sites() {
         let db = memory_database();
+        // Sites have no built-in names: the phone's own list gives github its category.
+        db.set_site(
+            vec!["github.com".into()],
+            "github".into(),
+            "Development".into(),
+        )
+        .unwrap();
         db.fill_demo_data(NOW, 7, 7, Arc::new(Utc)).unwrap();
         assert_eq!(db.devices().unwrap(), vec!["phone".to_string()]);
         let all = db
@@ -1715,6 +1771,54 @@ mod tests {
         assert_eq!(day.apps[0].secs, 120);
         assert_eq!(day.apps[0].category, "Other");
         let _ = std::fs::remove_file(conf);
+    }
+
+    /// Editing a site saves it to the phone's own list, colours it from the shared
+    /// category list, and offers its category when naming apps too.
+    #[test]
+    fn set_site_saves_and_shares_the_category_list() {
+        let db = memory_database();
+        // No built-in site list: nothing is categorised until someone names it.
+        assert_eq!(
+            db.sites.read().unwrap().sites.lookup("github.com").category,
+            "Other"
+        );
+        db.set_site(
+            vec!["github.com".into()],
+            "github".into(),
+            "Development".into(),
+        )
+        .unwrap();
+        let config = db.sites.read().unwrap();
+        let entry = config.sites.lookup("github.com");
+        assert_eq!(
+            (entry.display.as_str(), entry.category.as_str()),
+            ("github", "Development")
+        );
+        drop(config);
+        // "Development" is an app category, so the site shares its colour slot.
+        let app_slot = db.color_index("Development");
+        assert!(app_slot.is_some());
+        assert_eq!(db.site_color_index("Development"), app_slot);
+        // A category only sites use comes after the app ones, and apps can pick it.
+        db.set_site(vec!["espn.com".into()], "espn".into(), "Sports".into())
+            .unwrap();
+        let all = db.categories().unwrap();
+        assert!(all.contains(&"Sports".to_string()));
+        assert!(
+            db.site_color_index("Sports").unwrap() >= db.map().unwrap().categories().len() as u32
+        );
+        // Bad input saves nothing.
+        assert!(
+            db.set_site(vec!["a.com".into()], "".into(), "Cat".into())
+                .is_err()
+        );
+        // The file the phone uploads through sync is its own domains.conf.
+        assert!(
+            std::fs::read_to_string(db.domains_path())
+                .unwrap()
+                .contains("espn.com")
+        );
     }
 
     /// Lists shared by another computer are used, and the newest change wins:

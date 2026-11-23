@@ -65,7 +65,9 @@ data class SyncDraft(
  * @param usageAllowed whether Usage access has been granted to the app.
  * @param usageLastSecs when the phone's usage was last recorded (Unix seconds), or `null`.
  * @param usageMessage the result of the last recording, or `null`.
- * @param onAllowUsage called when "allow usage access" is tapped (opens Android's settings).
+ * @param onAllowUsage called when "continue" is tapped on the Usage access explanation
+ *   (opens Android's settings).
+ * @param onPrivacy called when "privacy policy" is tapped (opens the policy page).
  * @param onRecordNow called when "record now" is tapped.
  * @param debug true in debug builds, which add a button to delete all local data.
  * @param onWipe called after the delete button is tapped twice (debug builds only).
@@ -90,6 +92,7 @@ fun SettingsScreen(
     usageLastSecs: Long?,
     usageMessage: String?,
     onAllowUsage: () -> Unit,
+    onPrivacy: () -> Unit,
     onRecordNow: () -> Unit,
     debug: Boolean,
     onWipe: () -> Unit,
@@ -98,6 +101,9 @@ fun SettingsScreen(
     val colors = LocalTimesinkColors.current
     // The edits so far; they start as the saved details.
     var draft by remember { mutableStateOf(initial) }
+    // Whether the "why Usage access" explanation is showing. Android's own screen
+    // says little, so the app explains first and only then opens it.
+    var showUsageWhy by remember { mutableStateOf(false) }
     // The delete button needs two taps; this remembers the first.
     var confirmWipe by remember { mutableStateOf(false) }
 
@@ -184,7 +190,33 @@ fun SettingsScreen(
             Spacer(Modifier.height(6.dp))
             if (!usageAllowed) {
                 MonoText(text = "Usage access: not allowed yet", color = colors.warn, size = 13.sp)
-                ActionButton(label = "allow usage access", onClick = onAllowUsage)
+                if (!showUsageWhy) {
+                    ActionButton(label = "allow usage access", onClick = { showUsageWhy = true })
+                } else {
+                    // The explanation shown before the permission, in plain words.
+                    Spacer(Modifier.height(4.dp))
+                    MonoText(
+                        text = "timesink needs Usage access to record which apps you use on " +
+                            "this phone and for how long. It reads only app names and the " +
+                            "times they were open, never what you do inside them. The " +
+                            "record stays on this phone unless you set up your own sync " +
+                            "server, and it is never sent to the developer or anyone else. " +
+                            "You can turn it off again in Android's settings at any time.",
+                        color = colors.text,
+                        size = 12.sp,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ActionButton(
+                            label = "continue",
+                            onClick = {
+                                showUsageWhy = false
+                                onAllowUsage()
+                            },
+                        )
+                        ActionButton(label = "not now", onClick = { showUsageWhy = false })
+                    }
+                }
             } else {
                 MonoText(text = "Usage access: allowed", color = colors.ok, size = 13.sp)
                 MonoText(
@@ -239,6 +271,8 @@ fun SettingsScreen(
             }
             val pending = status?.pendingDays ?: 0u
             MonoText(text = "waiting to send  $pending day(s)", color = colors.muted, size = 13.sp)
+            Spacer(Modifier.height(4.dp))
+            ActionButton(label = "privacy policy", onClick = onPrivacy)
             if (message != null) {
                 Spacer(Modifier.height(6.dp))
                 MonoText(text = message, color = if (messageIsError) colors.danger else colors.ok, size = 12.sp)

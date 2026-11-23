@@ -9,7 +9,10 @@ time. The look imitates the terminal app.
 30 days, year, all time, calendar week, quarter and custom dates, with stepping
 back and forward), a device filter once more than one device has data, a Sites
 panel when website time exists, and tap-to-edit names and categories for
-applications. Sync with your own CouchDB, and recording the phone's own app use (from
+applications and websites (they share one category list and its colours, and
+website time is also shown by category; there
+is no built-in site list, so sites start uncategorised until you or another
+device names them). Sync with your own CouchDB, and recording the phone's own app use (from
 Android's Usage access), are there but off until you turn on the master switch
 in settings. Sync also shares app and site names and categories between devices (newest change wins). The battery rules are built in: tracking and sync pause below a
 battery level you choose (and optionally in Battery Saver) with one notification,
@@ -46,7 +49,49 @@ records none. Nothing leaves the phone unless you turn on sync and give it your
 own server. The server address, user and password are typed into the app and
 kept on the phone only.
 
+The full policy is `PRIVACY.md`; the app links to it from settings, and the Play
+Store listing uses the same page.
+
+## Releasing to Google Play
+
+The files in `play/` hold the listing text and the working Data safety answers.
+
+Once only:
+1. Make an upload key outside this folder and back it up (losing it makes updates
+   painful):
+   `keytool -genkeypair -v -keystore ~/keys/timesink-upload.jks -alias timesink-upload -keyalg RSA -keysize 4096 -validity 10000`
+2. Copy `keystore.properties.example` to `keystore.properties` and fill it in (it is
+   git-ignored). Set `TIMESINK_STORE_PASSWORD` and `TIMESINK_KEY_PASSWORD` in the
+   terminal instead of writing passwords to a file, if you prefer.
+3. In Play Console, create the app and accept Play App Signing (Google keeps the real
+   signing key; your key only proves uploads are yours).
+
+For every release:
+1. Raise `versionCode` (and `versionName`) in `app/build.gradle.kts`. Play refuses an
+   upload whose number is not higher than the last one.
+2. Build the bundle: `./gradlew bundleRelease`. The file is
+   `app/build/outputs/bundle/release/app-release.aab`.
+3. Upload it to a testing track: Testing > Internal testing for you and a few friends
+   (quick, up to 100 testers, does not count toward production access).
+4. Fill in App content (privacy policy link, Data safety, content rating, target
+   audience, ads: none) and the store listing from `play/listing.md`.
+
+Getting to production with a personal developer account created after 13 November
+2023: run a **closed** test with at least 12 testers who stay opted in for 14 days in
+a row, then apply for production access in Play Console. Collect testers' Google
+account emails in a Google Group so adding them is one step.
+
 ## Licence
 
 MIT. See `LICENSE`. The bundled JetBrains Mono font is under the SIL Open Font
 License (see `third_party/fonts`).
+
+## The icon
+
+The launcher icon is three rising rounded bars (red, yellow, green) on Catppuccin
+Macchiato "base". The master drawing is `art/timesink-icon.svg`, and
+`art/timesink-icon-512.png` is the 512 x 512 copy the Play Store listing asks for
+(it is square and full-bleed; Play rounds it itself). The in-app version is the
+three vector files `ic_launcher_background.xml`, `ic_launcher_foreground.xml` and
+`ic_launcher_monochrome.xml` (themed icons), scaled to sit inside the adaptive-icon
+safe zone. Change the SVG and these files together.
