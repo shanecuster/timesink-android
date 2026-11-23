@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- Background: Catppuccin Macchiato base -->
+  <rect width="512" height="512" fill="#24273a"/>
+  <!-- Bars, left to right: short red, medium yellow, tall green -->
+  <rect x="106" y="270" width="84" height="130" rx="18" fill="#ed8796"/>
+  <rect x="214" y="200" width="84" height="200" rx="18" fill="#eed49f"/>
+  <rect x="322" y="130" width="84" height="270" rx="18" fill="#a6da95"/>
+</svg>

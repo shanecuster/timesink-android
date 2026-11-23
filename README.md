@@ -53,3 +53,13 @@ kept on the phone only.
 
 MIT. See `LICENSE`. The bundled JetBrains Mono font is under the SIL Open Font
 License (see `third_party/fonts`).
+
+## The icon
+
+The launcher icon is three rising rounded bars (red, yellow, green) on Catppuccin
+Macchiato "base". The master drawing is `art/timesink-icon.svg`, and
+`art/timesink-icon-512.png` is the 512 x 512 copy the Play Store listing asks for
+(it is square and full-bleed; Play rounds it itself). The in-app version is the
+three vector files `ic_launcher_background.xml`, `ic_launcher_foreground.xml` and
+`ic_launcher_monochrome.xml` (themed icons), scaled to sit inside the adaptive-icon
+safe zone. Change the SVG and these files together.

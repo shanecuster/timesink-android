@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  PLACEHOLDER launcher icon (background layer): a flat dark green panel, the
-  colour of the default Everforest theme. Android crops the 108 x 108 canvas to
-  whatever shape the phone's launcher uses (circle, squircle, ...).
+  The launcher icon's background layer: a flat panel in Catppuccin Macchiato
+  "base" (#24273a). Android crops the 108 x 108 canvas to whatever shape the
+  phone's launcher uses (circle, squircle, ...).
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -10,6 +10,6 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
     <path
-        android:fillColor="#2D353B"
+        android:fillColor="#24273A"
         android:pathData="M0,0h108v108h-108z" />
 </vector>
