@@ -370,6 +370,15 @@ fun AppRoot(refreshKey: Int) {
                     usageLastSecs = settings.usageCursorMs.takeIf { it > 0 }?.div(1000L),
                     usageMessage = usageMessage,
                     onAllowUsage = { context.startActivity(UsageImporter.accessSettingsIntent()) },
+                    // The policy page opens in the phone's browser.
+                    onPrivacy = {
+                        context.startActivity(
+                            android.content.Intent(
+                                android.content.Intent.ACTION_VIEW,
+                                android.net.Uri.parse(com.shanetalkstech.timesink.PRIVACY_POLICY_URL),
+                            ),
+                        )
+                    },
                     onRecordNow = { scope.launch { importUsage() } },
                     debug = debuggable,
                     onWipe = {
